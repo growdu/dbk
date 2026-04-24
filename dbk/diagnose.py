@@ -6,17 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from .storage import RuntimeStore
+from .thresholds import DEFAULT_THRESHOLDS
 from .tracing import run_trace_profile
-
-
-THRESHOLDS = {
-    "query.p95_latency_ms": 200.0,
-    "wait.lock_ratio_pct": 30.0,
-    "io.read_latency_ms": 10.0,
-    "lock.blocked_sessions": 5.0,
-    "replication.lag_sec": 3.0,
-    "buffer.hit_ratio_pct": 95.0,  # lower is worse
-}
 
 
 @dataclass(slots=True)
@@ -41,7 +32,9 @@ def diagnose_latency_incident(
     task_id: str,
     artifacts_root: Path,
     auto_trace: bool = True,
+    thresholds: dict[str, float] | None = None,
 ) -> DiagnosisResult:
+    applied_thresholds = thresholds or dict(DEFAULT_THRESHOLDS)
     metrics = [
         "query.p95_latency_ms",
         "wait.lock_ratio_pct",
@@ -66,22 +59,22 @@ def diagnose_latency_incident(
         findings.append("No runtime metrics found for target instance.")
         verdict = "insufficient_data"
     else:
-        if latency > THRESHOLDS["query.p95_latency_ms"]:
+        if latency > applied_thresholds["query.p95_latency_ms"]:
             findings.append(f"p95 latency elevated: {latency:.2f}ms")
-        if lock_ratio is not None and lock_ratio > THRESHOLDS["wait.lock_ratio_pct"]:
+        if lock_ratio is not None and lock_ratio > applied_thresholds["wait.lock_ratio_pct"]:
             findings.append(f"lock wait ratio elevated: {lock_ratio:.2f}%")
-        if io_latency is not None and io_latency > THRESHOLDS["io.read_latency_ms"]:
+        if io_latency is not None and io_latency > applied_thresholds["io.read_latency_ms"]:
             findings.append(f"io read latency elevated: {io_latency:.2f}ms")
-        if blocked is not None and blocked > THRESHOLDS["lock.blocked_sessions"]:
+        if blocked is not None and blocked > applied_thresholds["lock.blocked_sessions"]:
             findings.append(f"blocked sessions high: {blocked:.0f}")
-        if hit_ratio is not None and hit_ratio < THRESHOLDS["buffer.hit_ratio_pct"]:
+        if hit_ratio is not None and hit_ratio < applied_thresholds["buffer.hit_ratio_pct"]:
             findings.append(f"buffer hit ratio low: {hit_ratio:.2f}%")
         verdict = "anomaly" if findings else "normal"
 
     trace_summary_path: Path | None = None
     if auto_trace and verdict == "anomaly":
         profile = "cpu-hotpath"
-        if io_latency is not None and io_latency > THRESHOLDS["io.read_latency_ms"]:
+        if io_latency is not None and io_latency > applied_thresholds["io.read_latency_ms"]:
             profile = "io-latency"
         trace_result = run_trace_profile(
             profile=profile,
@@ -103,6 +96,7 @@ def diagnose_latency_incident(
         "instance": instance,
         "verdict": verdict,
         "latest_metrics": latest,
+        "thresholds": applied_thresholds,
         "findings": findings,
         "trace_summary": str(trace_summary_path) if trace_summary_path else None,
     }
@@ -140,4 +134,3 @@ def diagnose_latency_incident(
         evidence_bundle=bundle_dir,
         trace_summary=trace_summary_path,
     )
-

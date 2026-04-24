@@ -1,0 +1,9 @@
+{
+  "query.p95_latency_ms": 180.0,
+  "wait.lock_ratio_pct": 25.0,
+  "io.read_latency_ms": 8.0,
+  "lock.blocked_sessions": 4.0,
+  "replication.lag_sec": 2.0,
+  "buffer.hit_ratio_pct": 96.0
+}
+

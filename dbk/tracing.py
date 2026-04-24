@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -17,6 +18,9 @@ PROFILE_COMMANDS = {
     "tcp-latency": ["bpftrace", "-e", "tracepoint:tcp:tcp_probe { @[comm] = count(); }"],
     "syscall-heavy": ["bpftrace", "-e", "tracepoint:raw_syscalls:sys_enter { @[comm] = count(); }"],
 }
+
+MAX_TRACE_DURATION_SEC = 120
+MAX_EXEC_TRACE_DURATION_SEC = 60
 
 
 @dataclass(slots=True)
@@ -38,11 +42,21 @@ def run_trace_profile(
     duration_sec: int,
     artifacts_root: Path,
     execute: bool = False,
+    approve_privileged: bool = False,
 ) -> TraceRunResult:
     if profile not in PROFILE_COMMANDS:
         raise ValueError(f"Unsupported profile: {profile}")
-    if duration_sec <= 0 or duration_sec > 120:
-        raise ValueError("duration_sec must be in range [1, 120]")
+    if duration_sec <= 0 or duration_sec > MAX_TRACE_DURATION_SEC:
+        raise ValueError(f"duration_sec must be in range [1, {MAX_TRACE_DURATION_SEC}]")
+    if execute and not approve_privileged:
+        raise PermissionError(
+            "Privileged trace execution requires explicit approval. "
+            "Pass --approve-privileged."
+        )
+    if execute and duration_sec > MAX_EXEC_TRACE_DURATION_SEC:
+        raise ValueError(
+            f"execute mode duration_sec must be <= {MAX_EXEC_TRACE_DURATION_SEC}."
+        )
 
     started_at = utc_now_iso()
     run_dir = artifacts_root / task_id / "traces" / profile
@@ -51,8 +65,9 @@ def run_trace_profile(
 
     command = PROFILE_COMMANDS[profile]
     command_available = shutil.which(command[0]) is not None
+    has_privilege = os.geteuid() == 0 if hasattr(os, "geteuid") else False
 
-    if execute and command_available:
+    if execute and command_available and has_privilege:
         try:
             proc = subprocess.run(
                 command,
@@ -66,6 +81,20 @@ def run_trace_profile(
         except subprocess.TimeoutExpired as exc:
             output = (exc.stdout or "").strip() or "trace timeout reached"
             mode = "timeout"
+    elif execute and command_available and not has_privilege:
+        output = (
+            "[simulated_unprivileged]\n"
+            "execute=true but current user is not root.\n"
+            "rerun with sudo or keep simulated mode."
+        )
+        mode = "simulated_unprivileged"
+    elif execute and not command_available:
+        output = (
+            "[simulated_missing_tool]\n"
+            f"command not found: {command[0]}\n"
+            "install bpftrace then rerun with --execute."
+        )
+        mode = "simulated_missing_tool"
     else:
         output = (
             f"[simulated]\nprofile={profile}\n"
@@ -124,4 +153,3 @@ def run_trace_profile(
 
 def supported_profiles() -> list[str]:
     return sorted(PROFILE_COMMANDS.keys())
-

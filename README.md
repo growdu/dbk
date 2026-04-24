@@ -23,7 +23,9 @@ python3 -m dbk.cli collect --source pgstat --instance pg-main-01 --dsn "postgres
 python3 -m dbk.cli metrics --metric query.p95_latency_ms --instance pg-main-01
 python3 -m dbk.cli trace profiles
 python3 -m dbk.cli trace run --profile cpu-hotpath --task-id demo-1 --duration 30
+python3 -m dbk.cli trace run --profile io-latency --task-id demo-2 --duration 20 --execute --approve-privileged
 python3 -m dbk.cli diagnose latency --instance pg-main-01 --task-id incident-1
+python3 -m dbk.cli diagnose latency --instance pg-main-01 --task-id incident-2 --thresholds-file ./thresholds.example.json
 ```
 
 输出将写入：
@@ -41,4 +43,5 @@ python3 -m pytest -q
 
 * PostgreSQL 采集依赖 `psycopg`；未安装时会提示并退出
 * `pg_stat_statements` / `pg_stat_io` 等视图缺失时，会记录 warning 并以 0 填充该指标
-* trace 默认为模拟执行；`--execute` 仅在本机具备 `bpftrace` 时生效
+* trace 默认为模拟执行；`--execute` 需要同时传 `--approve-privileged`
+* `--execute` 模式的 trace 时长上限为 60 秒，且非 root 用户会自动降级为模拟

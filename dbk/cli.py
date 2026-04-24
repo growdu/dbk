@@ -11,6 +11,7 @@ from .config import artifacts_root, runtime_db_path
 from .diagnose import diagnose_latency_incident
 from .pg_collectors import PgCollectorError, collect_pg_runtime_metrics
 from .storage import RuntimeStore
+from .thresholds import load_thresholds
 from .tracing import run_trace_profile, supported_profiles
 
 
@@ -82,13 +83,18 @@ def cmd_trace_profiles(_: argparse.Namespace) -> int:
 
 def cmd_trace_run(args: argparse.Namespace) -> int:
     store = _store()
-    result = run_trace_profile(
-        profile=args.profile,
-        task_id=args.task_id,
-        duration_sec=args.duration,
-        artifacts_root=artifacts_root(),
-        execute=args.execute,
-    )
+    try:
+        result = run_trace_profile(
+            profile=args.profile,
+            task_id=args.task_id,
+            duration_sec=args.duration,
+            artifacts_root=artifacts_root(),
+            execute=args.execute,
+            approve_privileged=args.approve_privileged,
+        )
+    except (ValueError, PermissionError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     store.insert_trace_artifact(result.artifact)
     print(f"Trace profile complete: {args.profile}")
     print(f"stdout: {result.stdout_path}")
@@ -98,12 +104,18 @@ def cmd_trace_run(args: argparse.Namespace) -> int:
 
 def cmd_diagnose_latency(args: argparse.Namespace) -> int:
     store = _store()
+    try:
+        thresholds = load_thresholds(Path(args.thresholds_file)) if args.thresholds_file else None
+    except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+        print(f"Invalid thresholds file: {exc}", file=sys.stderr)
+        return 2
     result = diagnose_latency_incident(
         store=store,
         instance=args.instance,
         task_id=args.task_id,
         artifacts_root=artifacts_root(),
         auto_trace=args.auto_trace,
+        thresholds=thresholds,
     )
     print(f"verdict: {result.verdict}")
     if result.findings:
@@ -146,6 +158,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--task-id", required=True)
     p_run.add_argument("--duration", type=int, default=30)
     p_run.add_argument("--execute", action="store_true")
+    p_run.add_argument(
+        "--approve-privileged",
+        action="store_true",
+        help="Required when --execute is used for privileged trace runs",
+    )
     p_run.set_defaults(func=cmd_trace_run)
 
     p_diagnose = sub.add_parser("diagnose", help="Incident diagnosis")
@@ -154,6 +171,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_latency.add_argument("--instance", default="pg-main-01")
     p_latency.add_argument("--task-id", required=True)
     p_latency.add_argument("--auto-trace", action=argparse.BooleanOptionalAction, default=True)
+    p_latency.add_argument(
+        "--thresholds-file",
+        help="Optional JSON file to override diagnosis thresholds",
+    )
     p_latency.set_defaults(func=cmd_diagnose_latency)
 
     return parser

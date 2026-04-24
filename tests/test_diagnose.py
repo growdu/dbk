@@ -36,3 +36,30 @@ def test_diagnose_generates_evidence_bundle(tmp_path: Path) -> None:
     assert (result.evidence_bundle / "evidence.json").exists()
     assert result.trace_summary is not None
 
+
+def test_diagnose_with_custom_thresholds(tmp_path: Path) -> None:
+    db = tmp_path / "runtime.sqlite"
+    store = RuntimeStore(db)
+    store.init_schema()
+    store.insert_events(
+        [
+            RuntimeEvent.create(
+                instance="pg-main-02",
+                source="test",
+                category="query",
+                metric="query.p95_latency_ms",
+                value=140.0,
+                labels={"unit": "ms"},
+            )
+        ]
+    )
+    result = diagnose_latency_incident(
+        store=store,
+        instance="pg-main-02",
+        task_id="incident-2",
+        artifacts_root=tmp_path / "artifacts",
+        auto_trace=False,
+        thresholds={"query.p95_latency_ms": 120.0, "wait.lock_ratio_pct": 30.0, "io.read_latency_ms": 10.0, "lock.blocked_sessions": 5.0, "replication.lag_sec": 3.0, "buffer.hit_ratio_pct": 95.0},
+    )
+    assert result.verdict == "anomaly"
+    assert any("p95 latency elevated" in x for x in result.findings)
