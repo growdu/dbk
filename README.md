@@ -19,6 +19,7 @@ Database Kernel Agent CLI 的最小可用实现，覆盖：
 ```bash
 python3 -m dbk.cli init
 python3 -m dbk.cli collect --instance pg-main-01
+python3 -m dbk.cli collect --source pgstat --instance pg-main-01 --dsn "postgresql://user:pass@127.0.0.1:5432/postgres"
 python3 -m dbk.cli metrics --metric query.p95_latency_ms --instance pg-main-01
 python3 -m dbk.cli trace profiles
 python3 -m dbk.cli trace run --profile cpu-hotpath --task-id demo-1 --duration 30
@@ -38,6 +39,6 @@ python3 -m pytest -q
 
 ## 当前限制
 
-* collector 仅实现 `mock` 数据源（尚未接入真实 PostgreSQL 连接）
+* PostgreSQL 采集依赖 `psycopg`；未安装时会提示并退出
+* `pg_stat_statements` / `pg_stat_io` 等视图缺失时，会记录 warning 并以 0 填充该指标
 * trace 默认为模拟执行；`--execute` 仅在本机具备 `bpftrace` 时生效
-

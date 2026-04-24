@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 from .collectors import collect_mock_runtime_metrics
 from .config import artifacts_root, runtime_db_path
 from .diagnose import diagnose_latency_incident
+from .pg_collectors import PgCollectorError, collect_pg_runtime_metrics
 from .storage import RuntimeStore
 from .tracing import run_trace_profile, supported_profiles
 
@@ -29,10 +31,26 @@ def cmd_init(_: argparse.Namespace) -> int:
 
 def cmd_collect(args: argparse.Namespace) -> int:
     store = _store()
-    if args.source != "mock":
-        print("Only --source mock is supported in MVP.", file=sys.stderr)
+    if args.source == "mock":
+        events = collect_mock_runtime_metrics(instance=args.instance)
+    elif args.source == "pgstat":
+        dsn = args.dsn or os.environ.get("DBK_PG_DSN")
+        if not dsn:
+            print("Missing DSN: pass --dsn or set DBK_PG_DSN.", file=sys.stderr)
+            return 2
+        try:
+            result = collect_pg_runtime_metrics(instance=args.instance, dsn=dsn)
+        except PgCollectorError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        events = result.events
+        if result.warnings:
+            print("collector warnings:", file=sys.stderr)
+            for item in result.warnings:
+                print(f"- {item}", file=sys.stderr)
+    else:
+        print("Unsupported --source value.", file=sys.stderr)
         return 2
-    events = collect_mock_runtime_metrics(instance=args.instance)
     count = store.insert_events(events)
     print(f"Collected {count} metrics for instance={args.instance}")
     return 0
@@ -107,7 +125,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_collect = sub.add_parser("collect", help="Collect runtime metrics")
     p_collect.add_argument("--instance", default="pg-main-01")
-    p_collect.add_argument("--source", default="mock")
+    p_collect.add_argument("--source", default="mock", choices=["mock", "pgstat"])
+    p_collect.add_argument("--dsn", help="PostgreSQL DSN, used only when --source pgstat")
     p_collect.set_defaults(func=cmd_collect)
 
     p_metrics = sub.add_parser("metrics", help="Query metrics from sqlite store")
@@ -148,4 +167,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
