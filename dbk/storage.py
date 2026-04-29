@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .models import RuntimeEvent, TraceArtifact
@@ -136,3 +137,53 @@ class RuntimeStore:
         with self.connect() as conn:
             return list(conn.execute(sql, tuple(params)))
 
+    @staticmethod
+    def _cutoff_iso(*, older_than_hours: float) -> str:
+        if older_than_hours <= 0:
+            raise ValueError("older_than_hours must be > 0")
+        cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=older_than_hours)
+        return cutoff.isoformat()
+
+    def count_metrics_older_than(self, *, older_than_hours: float, instance: str | None = None) -> int:
+        cutoff = self._cutoff_iso(older_than_hours=older_than_hours)
+        sql = "SELECT COUNT(*) FROM runtime_metric WHERE ts < ?"
+        params: list[object] = [cutoff]
+        if instance:
+            sql += " AND instance = ?"
+            params.append(instance)
+        with self.connect() as conn:
+            row = conn.execute(sql, tuple(params)).fetchone()
+            return int(row[0] if row else 0)
+
+    def delete_metrics_older_than(self, *, older_than_hours: float, instance: str | None = None) -> int:
+        cutoff = self._cutoff_iso(older_than_hours=older_than_hours)
+        sql = "DELETE FROM runtime_metric WHERE ts < ?"
+        params: list[object] = [cutoff]
+        if instance:
+            sql += " AND instance = ?"
+            params.append(instance)
+        with self.connect() as conn:
+            cur = conn.execute(sql, tuple(params))
+            return int(cur.rowcount or 0)
+
+    def count_trace_artifacts_older_than(self, *, older_than_hours: float) -> int:
+        cutoff = self._cutoff_iso(older_than_hours=older_than_hours)
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM trace_artifact WHERE started_at < ?",
+                (cutoff,),
+            ).fetchone()
+            return int(row[0] if row else 0)
+
+    def delete_trace_artifacts_older_than(self, *, older_than_hours: float) -> int:
+        cutoff = self._cutoff_iso(older_than_hours=older_than_hours)
+        with self.connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM trace_artifact WHERE started_at < ?",
+                (cutoff,),
+            )
+            return int(cur.rowcount or 0)
+
+    def vacuum(self) -> None:
+        with self.connect() as conn:
+            conn.execute("VACUUM")
