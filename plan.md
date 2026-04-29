@@ -109,7 +109,37 @@
 3. 推进 PG 版本矩阵集成测试自动化
 4. 开始 workflow 状态机最小实现
 
-## 5. 非目标与忽略项
+## 5. CLI 重构策略（参考 pi-mono）
+
+目标：吸收 `pi-mono` 在 agent core / runtime / tui 分层上的优点，同时避免立即跨语言重写风险。
+
+策略：借鉴设计，不直接迁移。
+
+### 5.1 短期（当前迭代）
+
+* 保持 Python CLI 主体不变
+* 继续按“core/runtime/daemon/report”边界整理模块
+* 新功能优先以可测试的独立模块落地，避免 CLI 巨石化
+
+### 5.2 中期（1-2 个迭代）
+
+* 提炼 provider/runtime 抽象接口，对齐 `pi-agent-core` 风格职责
+* 引入统一 command contract（输入/输出 schema、错误码）
+* 为未来 TUI 或多前端接入预留 IPC/HTTP adapter
+
+### 5.3 长期（按需求触发）
+
+两条可选路线：
+
+* 路线 A：继续 Python 技术栈，增强 TUI（低风险、快落地）
+* 路线 B：新增 TS 前端层（参考 `pi-tui`），通过 IPC 调用现有 Python runtime（中风险、扩展性更强）
+
+触发条件（满足任一）：
+
+* 需要复杂交互式 TUI 且 Python UI 框架出现明显瓶颈
+* 需要多终端共享同一 agent core 协议
+* 现有 CLI 的演进速度明显受限于架构边界
+
+## 6. 非目标与忽略项
 
 * 当前阶段继续忽略工作区中与主线无关内容：`.DS_Store`、`jianli/`
-
