@@ -8,6 +8,7 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Callable
 
@@ -227,6 +228,8 @@ def list_daemons(
     cwd: Path | None = None,
     include_stale: bool = True,
     tag: str | None = None,
+    source: str | None = None,
+    instance_pattern: str | None = None,
     min_priority: int | None = None,
 ) -> list[dict[str, object]]:
     payloads: list[dict[str, object]] = []
@@ -244,6 +247,12 @@ def list_daemons(
         if tag:
             state_tags = [str(item) for item in payload["tags"]]
             if tag not in state_tags:
+                continue
+        if source and str(payload.get("source", "")) != source:
+            continue
+        if instance_pattern:
+            instance_name = str(payload.get("instance", ""))
+            if not fnmatch(instance_name, instance_pattern):
                 continue
         if min_priority is not None and _state_priority(payload) < min_priority:
             continue

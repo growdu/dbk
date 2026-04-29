@@ -25,7 +25,7 @@ python3 -m dbk.cli collect --source pgstat --instance pg-main-01 --dsn "postgres
 python3 -m dbk.cli collect daemon start --source mock --instance pg-main-01 --interval-sec 15
 python3 -m dbk.cli collect daemon start --source mock --instance pg-crit --interval-sec 5 --priority 90 --tags prod,critical --max-running 3 --preempt-lower-priority
 python3 -m dbk.cli collect daemon status
-python3 -m dbk.cli collect daemon list --tag prod --min-priority 80
+python3 -m dbk.cli collect daemon list --tag prod --source mock --instance-pattern "pg-*" --min-priority 80
 python3 -m dbk.cli collect daemon stop --instance pg-main-01
 python3 -m dbk.cli collect daemon stop --all
 python3 -m dbk.cli collect daemon stop
@@ -34,7 +34,7 @@ python3 -m dbk.cli runtime cleanup --older-than-hours 168 --dry-run
 python3 -m dbk.cli runtime cleanup --older-than-hours 168 --vacuum
 python3 -m dbk.cli runtime cleanup-daemon start --interval-sec 3600 --older-than-hours 168
 python3 -m dbk.cli runtime cleanup-daemon status
-python3 -m dbk.cli runtime cleanup-report --limit 50
+python3 -m dbk.cli runtime cleanup-report --limit 50 --window-hours 24
 python3 -m dbk.cli runtime cleanup-daemon stop
 python3 -m dbk.cli trace profiles
 python3 -m dbk.cli trace run --profile cpu-hotpath --task-id demo-1 --duration 30

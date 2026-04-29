@@ -174,6 +174,8 @@ def cmd_collect_daemon_list(args: argparse.Namespace) -> int:
             cwd=Path.cwd(),
             include_stale=True,
             tag=args.tag,
+            source=args.source,
+            instance_pattern=args.instance_pattern,
             min_priority=args.min_priority,
         )
     }
@@ -277,7 +279,15 @@ def cmd_runtime_cleanup_daemon_run(args: argparse.Namespace) -> int:
 
 
 def cmd_runtime_cleanup_report(args: argparse.Namespace) -> int:
-    payload = build_cleanup_report(limit=args.limit, cwd=Path.cwd())
+    try:
+        payload = build_cleanup_report(
+            limit=args.limit,
+            window_hours=args.window_hours,
+            cwd=Path.cwd(),
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     daemon_payload = cleanup_daemon_status(cwd=Path.cwd())
     payload["daemon"] = daemon_payload
     print(json.dumps(payload, ensure_ascii=True, indent=2))
@@ -412,6 +422,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_collect_daemon_list = daemon_sub.add_parser("list", help="List daemon instances")
     p_collect_daemon_list.add_argument("--tag", help="Filter by tag")
+    p_collect_daemon_list.add_argument("--source", choices=["mock", "pgstat"], help="Filter by source")
+    p_collect_daemon_list.add_argument("--instance-pattern", help="Filter by wildcard pattern, e.g. pg-prod-*")
     p_collect_daemon_list.add_argument("--min-priority", type=int, help="Filter by minimum priority")
     p_collect_daemon_list.set_defaults(func=cmd_collect_daemon_list)
 
@@ -479,6 +491,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_runtime_cleanup_report = runtime_sub.add_parser("cleanup-report", help="Show cleanup history report")
     p_runtime_cleanup_report.add_argument("--limit", type=int, default=50)
+    p_runtime_cleanup_report.add_argument("--window-hours", type=float, help="Only include recent N hours")
     p_runtime_cleanup_report.set_defaults(func=cmd_runtime_cleanup_report)
 
     p_trace = sub.add_parser("trace", help="Trace operations")

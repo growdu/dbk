@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -92,8 +92,37 @@ def read_cleanup_history(*, limit: int = 50, cwd: Path | None = None) -> list[di
     return payload
 
 
-def build_cleanup_report(*, limit: int = 50, cwd: Path | None = None) -> dict[str, Any]:
+def _parse_history_ts(raw: Any) -> datetime | None:
+    if not isinstance(raw, str):
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def build_cleanup_report(
+    *,
+    limit: int = 50,
+    window_hours: float | None = None,
+    cwd: Path | None = None,
+) -> dict[str, Any]:
     history = read_cleanup_history(limit=limit, cwd=cwd)
+    if window_hours is not None:
+        if window_hours <= 0:
+            raise ValueError("window_hours must be > 0")
+        cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=window_hours)
+        filtered: list[dict[str, Any]] = []
+        for item in history:
+            ts = _parse_history_ts(item.get("ts"))
+            if ts is None:
+                continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if ts >= cutoff:
+                filtered.append(item)
+        history = filtered
+
     total_runs = len(history)
     total_metrics_deleted = 0
     total_trace_deleted = 0
@@ -121,6 +150,7 @@ def build_cleanup_report(*, limit: int = 50, cwd: Path | None = None) -> dict[st
     return {
         "generated_at": now_iso,
         "window_size": limit,
+        "window_hours": window_hours,
         "total_runs": total_runs,
         "failed_runs": failed_runs,
         "last_run_at": last_run_at,
