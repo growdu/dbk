@@ -48,8 +48,9 @@ def test_runtime_metric_retention_count_and_delete(tmp_path: Path) -> None:
     )
 
     assert store.count_metrics_older_than(older_than_hours=168, instance="pg-a") == 1
-    deleted = store.delete_metrics_older_than(older_than_hours=168, instance="pg-a")
+    deleted, truncated = store.delete_metrics_older_than(older_than_hours=168, instance="pg-a")
     assert deleted == 1
+    assert truncated is False
     assert store.count_metrics_older_than(older_than_hours=168, instance="pg-a") == 0
     assert store.count_metrics_older_than(older_than_hours=168, instance="pg-b") == 1
 

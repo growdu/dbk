@@ -32,6 +32,8 @@ class RuntimeCleanupDaemonState:
     skip_trace_db: bool
     skip_artifacts: bool
     vacuum: bool
+    max_delete_per_run: int | None
+    safety_floor_hours: float | None
     started_at: str
     log_path: str
     last_heartbeat_at: str | None = None
@@ -49,6 +51,8 @@ class RuntimeCleanupDaemonState:
             "skip_trace_db": self.skip_trace_db,
             "skip_artifacts": self.skip_artifacts,
             "vacuum": self.vacuum,
+            "max_delete_per_run": self.max_delete_per_run,
+            "safety_floor_hours": self.safety_floor_hours,
             "started_at": self.started_at,
             "log_path": self.log_path,
             "last_heartbeat_at": self.last_heartbeat_at,
@@ -128,6 +132,8 @@ def build_cleanup_report(
     total_trace_deleted = 0
     total_artifact_dirs_deleted = 0
     failed_runs = 0
+    # Per-instance totals across all cleanup runs.
+    instance_deleted_totals: dict[str, int] = {}
     for item in history:
         error = item.get("error")
         if error:
@@ -140,10 +146,23 @@ def build_cleanup_report(
             artifact_dirs = summary.get("artifact_dirs", {})
             if isinstance(runtime_metrics, dict):
                 total_metrics_deleted += int(runtime_metrics.get("deleted", 0) or 0)
+                # Aggregate per-instance candidate counts for top-instances view.
+                top_instances = runtime_metrics.get("top_instances", {})
+                if isinstance(top_instances, dict):
+                    for inst, count in top_instances.items():
+                        instance_deleted_totals[inst] = instance_deleted_totals.get(inst, 0) + int(count)
             if isinstance(trace_db, dict):
                 total_trace_deleted += int(trace_db.get("deleted", 0) or 0)
             if isinstance(artifact_dirs, dict):
                 total_artifact_dirs_deleted += int(artifact_dirs.get("deleted", 0) or 0)
+
+    # Top instances by candidate metrics (not deleted, since we only track per-instance for candidates).
+    top_instances_sorted = sorted(
+        instance_deleted_totals.items(), key=lambda x: x[1], reverse=True
+    )
+    top_instances_report = [
+        {"instance": inst, "candidate_metrics": count} for inst, count in top_instances_sorted[:10]
+    ]
 
     last_run_at = history[-1].get("ts") if history else None
     now_iso = datetime.now(tz=timezone.utc).isoformat()
@@ -159,6 +178,7 @@ def build_cleanup_report(
             "trace_artifacts_deleted": total_trace_deleted,
             "artifact_dirs_deleted": total_artifact_dirs_deleted,
         },
+        "top_instances": top_instances_report,
         "recent": history[-10:],
     }
 
@@ -178,6 +198,8 @@ def start_cleanup_daemon(
     skip_trace_db: bool,
     skip_artifacts: bool,
     vacuum: bool,
+    max_delete_per_run: int | None,
+    safety_floor_hours: float | None,
     cwd: Path | None = None,
 ) -> RuntimeCleanupDaemonState:
     if interval_sec <= 0:
@@ -213,6 +235,10 @@ def start_cleanup_daemon(
         cmd.append("--skip-artifacts")
     if vacuum:
         cmd.append("--vacuum")
+    if safety_floor_hours is not None:
+        cmd.extend(["--safety-floor-hours", str(safety_floor_hours)])
+    if max_delete_per_run is not None:
+        cmd.extend(["--max-delete-per-run", str(max_delete_per_run)])
 
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as logf:
@@ -232,6 +258,8 @@ def start_cleanup_daemon(
         skip_trace_db=skip_trace_db,
         skip_artifacts=skip_artifacts,
         vacuum=vacuum,
+        max_delete_per_run=max_delete_per_run,
+        safety_floor_hours=safety_floor_hours,
         started_at=utc_now_iso(),
         log_path=str(log_path),
     )
@@ -239,7 +267,14 @@ def start_cleanup_daemon(
     return state
 
 
-def stop_cleanup_daemon(*, cwd: Path | None = None, timeout_sec: float = 5.0) -> dict[str, object]:
+def stop_cleanup_daemon(
+    *, cwd: Path | None = None, timeout_sec: float = 5.0, graceful_timeout_sec: float = 3.0
+) -> dict[str, object]:
+    """Stop the cleanup daemon with a two-phase approach.
+
+    Phase 1: SIGTERM + wait up to graceful_timeout_sec for clean exit.
+    Phase 2: SIGKILL + wait up to remaining time.
+    """
     state_path = runtime_cleanup_daemon_state_path(cwd)
     state = read_state(state_path)
     if state is None:
@@ -249,24 +284,43 @@ def stop_cleanup_daemon(*, cwd: Path | None = None, timeout_sec: float = 5.0) ->
     if not is_pid_running(pid):
         state_path.unlink(missing_ok=True)
         return {"stopped": True, "pid": pid, "signal": "none"}
+
+    graceful_deadline = time.time() + graceful_timeout_sec
+    term_sent = False
     try:
         os.kill(pid, signal.SIGTERM)
+        term_sent = True
     except PermissionError:
-        return {"stopped": False, "pid": pid, "reason": "permission_denied_on_sigterm"}
+        return {"stopped": False, "pid": pid, "reason": "permission_denied_sigterm"}
+    except ProcessLookupError:
+        state_path.unlink(missing_ok=True)
+        return {"stopped": True, "pid": pid, "signal": "none"}
 
-    deadline = time.time() + timeout_sec
-    while time.time() < deadline:
+    # Phase 1: wait for graceful SIGTERM.
+    while time.time() < graceful_deadline:
         if not is_pid_running(pid):
             state_path.unlink(missing_ok=True)
             return {"stopped": True, "pid": pid, "signal": "SIGTERM"}
-        time.sleep(0.2)
+        time.sleep(0.1)
 
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except PermissionError:
-        return {"stopped": False, "pid": pid, "reason": "permission_denied_on_sigkill"}
-    state_path.unlink(missing_ok=True)
-    return {"stopped": True, "pid": pid, "signal": "SIGKILL"}
+    # Phase 2: SIGKILL.
+    if term_sent:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except PermissionError:
+            return {"stopped": False, "pid": pid, "reason": "permission_denied_sigkill_after_sigterm"}
+        except ProcessLookupError:
+            state_path.unlink(missing_ok=True)
+            return {"stopped": True, "pid": pid, "signal": "none"}
+
+    kill_deadline = time.time() + max(0, timeout_sec - graceful_timeout_sec)
+    while time.time() < kill_deadline:
+        if not is_pid_running(pid):
+            state_path.unlink(missing_ok=True)
+            return {"stopped": True, "pid": pid, "signal": "SIGKILL"}
+        time.sleep(0.1)
+
+    return {"stopped": False, "pid": pid, "reason": "survived_sigkill"}
 
 
 def cleanup_daemon_status(*, cwd: Path | None = None) -> dict[str, object]:
@@ -288,6 +342,8 @@ def run_cleanup_loop(
     skip_trace_db: bool,
     skip_artifacts: bool,
     vacuum: bool,
+    max_delete_per_run: int | None,
+    safety_floor_hours: float | None,
     state_path: Path | None = None,
     history_path: Path | None = None,
 ) -> int:
@@ -303,6 +359,12 @@ def run_cleanup_loop(
         skip_trace_db=bool(target_state.get("skip_trace_db", skip_trace_db)),
         skip_artifacts=bool(target_state.get("skip_artifacts", skip_artifacts)),
         vacuum=bool(target_state.get("vacuum", vacuum)),
+        max_delete_per_run=int(target_state["max_delete_per_run"])  # type: ignore[arg-type]
+        if target_state.get("max_delete_per_run") is not None
+        else max_delete_per_run,
+        safety_floor_hours=float(target_state["safety_floor_hours"])  # type: ignore[arg-type]
+        if target_state.get("safety_floor_hours") is not None
+        else safety_floor_hours,
         started_at=str(target_state.get("started_at", utc_now_iso())),
         log_path=str(target_state.get("log_path", runtime_cleanup_daemon_log_path())),
         last_heartbeat_at=target_state.get("last_heartbeat_at"),  # type: ignore[arg-type]
@@ -334,6 +396,8 @@ def run_cleanup_loop(
                 skip_trace_db=state.skip_trace_db,
                 skip_artifacts=state.skip_artifacts,
                 vacuum=state.vacuum,
+                max_delete_per_run=state.max_delete_per_run,
+                safety_floor_hours=state.safety_floor_hours,
             )
             state.total_runs += 1
             state.last_success_at = now

@@ -62,4 +62,4 @@ def test_diagnose_with_custom_thresholds(tmp_path: Path) -> None:
         thresholds={"query.p95_latency_ms": 120.0, "wait.lock_ratio_pct": 30.0, "io.read_latency_ms": 10.0, "lock.blocked_sessions": 5.0, "replication.lag_sec": 3.0, "buffer.hit_ratio_pct": 95.0},
     )
     assert result.verdict == "anomaly"
-    assert any("p95 latency elevated" in x for x in result.findings)
+    assert any("query.p95_latency_ms" in x for x in result.findings)

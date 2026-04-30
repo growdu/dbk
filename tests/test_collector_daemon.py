@@ -41,4 +41,4 @@ def test_stop_daemon_permission_denied(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setattr("os.kill", _kill)
     payload = stop_daemon(cwd=tmp_path)
     assert payload["stopped"] is False
-    assert payload["reason"] == "permission_denied_on_sigterm"
+    assert payload["reason"] == "permission_denied_sigterm"

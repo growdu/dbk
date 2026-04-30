@@ -183,7 +183,15 @@ def stop_daemon(
     instance: str = "default",
     cwd: Path | None = None,
     timeout_sec: float = 5.0,
+    graceful_timeout_sec: float = 3.0,
 ) -> dict[str, object]:
+    """Stop a collector daemon.
+
+    Stops the daemon with a two-phase approach:
+    1. Send SIGTERM and wait up to graceful_timeout_sec for clean exit.
+    2. If still running, send SIGKILL and wait up to (timeout_sec - graceful_timeout_sec).
+    If the daemon is not tracked in the state file, returns stopped=False.
+    """
     state_path = collector_daemon_state_path(cwd, instance=instance)
     state = read_state(state_path)
     if state is None:
@@ -194,33 +202,59 @@ def stop_daemon(
         state_path.unlink(missing_ok=True)
         return {"stopped": True, "pid": pid, "signal": "none", "instance": state.get("instance", instance)}
 
+    graceful_deadline = time.time() + graceful_timeout_sec
+    term_sent = False
     try:
         os.kill(pid, signal.SIGTERM)
+        term_sent = True
     except PermissionError:
+        # No permission to signal at all.
         return {
             "stopped": False,
             "pid": pid,
-            "reason": "permission_denied_on_sigterm",
+            "reason": "permission_denied_sigterm",
             "instance": state.get("instance", instance),
         }
-    deadline = time.time() + timeout_sec
-    while time.time() < deadline:
+    except ProcessLookupError:
+        state_path.unlink(missing_ok=True)
+        return {"stopped": True, "pid": pid, "signal": "none", "instance": state.get("instance", instance)}
+
+    # Phase 1: wait for graceful SIGTERM exit.
+    while time.time() < graceful_deadline:
         if not is_pid_running(pid):
             state_path.unlink(missing_ok=True)
             return {"stopped": True, "pid": pid, "signal": "SIGTERM", "instance": state.get("instance", instance)}
-        time.sleep(0.2)
+        time.sleep(0.1)
 
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except PermissionError:
-        return {
-            "stopped": False,
-            "pid": pid,
-            "reason": "permission_denied_on_sigkill",
-            "instance": state.get("instance", instance),
-        }
-    state_path.unlink(missing_ok=True)
-    return {"stopped": True, "pid": pid, "signal": "SIGKILL", "instance": state.get("instance", instance)}
+    # Phase 2: SIGKILL.
+    if term_sent:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except PermissionError:
+            return {
+                "stopped": False,
+                "pid": pid,
+                "reason": "permission_denied_sigkill_after_sigterm",
+                "instance": state.get("instance", instance),
+            }
+        except ProcessLookupError:
+            state_path.unlink(missing_ok=True)
+            return {"stopped": True, "pid": pid, "signal": "none", "instance": state.get("instance", instance)}
+
+    kill_deadline = time.time() + max(0, timeout_sec - graceful_timeout_sec)
+    while time.time() < kill_deadline:
+        if not is_pid_running(pid):
+            state_path.unlink(missing_ok=True)
+            return {"stopped": True, "pid": pid, "signal": "SIGKILL", "instance": state.get("instance", instance)}
+        time.sleep(0.1)
+
+    # Should not reach here if SIGKILL was sent, but guard anyway.
+    return {
+        "stopped": False,
+        "pid": pid,
+        "reason": "survived_sigkill",
+        "instance": state.get("instance", instance),
+    }
 
 
 def list_daemons(

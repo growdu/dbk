@@ -10,6 +10,10 @@ from .thresholds import DEFAULT_THRESHOLDS
 from .tracing import run_trace_profile
 
 
+# Number of recent data points to fetch for time-series analysis.
+_TIME_SERIES_WINDOW = 20
+
+
 @dataclass(slots=True)
 class DiagnosisResult:
     task_id: str
@@ -17,12 +21,39 @@ class DiagnosisResult:
     findings: list[str]
     evidence_bundle: Path
     trace_summary: Path | None
+    time_series: dict[str, dict[str, float | int | str | None]]  # metric -> {avg, max, min, trend}
 
 
 def _extract_latest_value(rows: list[Any]) -> float | None:
     if not rows:
         return None
     return float(rows[0]["value"])
+
+
+def _compute_trend(values: list[float]) -> str:
+    """Simple linear trend: compare first half avg to second half avg."""
+    if len(values) < 4:
+        return "insufficient_data"
+    mid = len(values) // 2
+    first_half = values[:mid]
+    second_half = values[mid:]
+    first_avg = sum(first_half) / len(first_half)
+    second_avg = sum(second_half) / len(second_half)
+    delta = second_avg - first_avg
+    if abs(delta) < 0.05 * (abs(first_avg) + 0.01):
+        return "stable"
+    return "increasing" if delta > 0 else "decreasing"
+
+
+# Actionable SQL commands to include in the runbook.
+_DIAGNOSTIC_SQL_COMMANDS = [
+    ("active_wait_sessions", "SELECT pid, usename, state, wait_event_type, wait_event, query_start FROM pg_stat_activity WHERE state = 'active' AND wait_event IS NOT NULL ORDER BY query_start;"),
+    ("blocked_locks", "SELECT bl.pid AS blocked_pid, a.usename AS blocked_user, a.query AS blocked_query, cl.relname, l.locktype, l.mode FROM pg_locks bl JOIN pg_stat_activity a ON bl.pid = a.pid JOIN pg_class cl ON bl.relation = cl.oid JOIN pg_locks l ON bl.locktype = l.locktype WHERE NOT bl.granted;"),
+    ("long_running_queries", "SELECT pid, now() - query_start AS duration, state, query FROM pg_stat_activity WHERE state = 'active' AND query_start < now() - interval '5 minutes' ORDER BY duration DESC;"),
+    ("buffer_cache_hit_ratio", "SELECT CASE WHEN SUM(blks_hit + blks_read) = 0 THEN 100 ELSE round(100.0 * SUM(blks_hit) / SUM(blks_hit + blks_read), 2) END AS cache_hit_ratio FROM pg_stat_database;"),
+    ("replication_lag", "SELECT client_addr, state, sent_lsn, write_lsn, flush_lsn, replay_lsn, (sent_lsn - replay_lsn) AS lag_lsn FROM pg_stat_replication;"),
+    ("top_slow_queries", "SELECT round(mean_exec_time::numeric, 2) AS avg_ms, calls, round(total_exec_time::numeric, 2) AS total_ms, query FROM pg_stat_statements WHERE calls > 0 ORDER BY mean_exec_time DESC LIMIT 10;"),
+]
 
 
 def diagnose_latency_incident(
@@ -42,39 +73,78 @@ def diagnose_latency_incident(
         "lock.blocked_sessions",
         "replication.lag_sec",
         "buffer.hit_ratio_pct",
+        "connection.active_count",
+        "connection.total_count",
+        "transaction.rollback_ratio_pct",
+        "checkpoint.write_latency_ms",
     ]
     latest: dict[str, float | None] = {}
+    time_series: dict[str, dict[str, float | int | str | None]] = {}
+
     for metric in metrics:
-        rows = store.query_latest_metric(metric=metric, instance=instance, limit=1)
+        rows = store.query_latest_metric(metric=metric, instance=instance, limit=_TIME_SERIES_WINDOW)
         latest[metric] = _extract_latest_value(rows)
+        # Time-series analysis: compute aggregate over the window.
+        if rows:
+            agg = RuntimeStore.aggregate_rows(rows)
+            values = [float(r["value"]) for r in rows]
+            agg["trend"] = _compute_trend(values)
+            time_series[metric] = agg
+        else:
+            time_series[metric] = {}
 
     findings: list[str] = []
-    latency = latest["query.p95_latency_ms"]
-    lock_ratio = latest["wait.lock_ratio_pct"]
-    io_latency = latest["io.read_latency_ms"]
-    blocked = latest["lock.blocked_sessions"]
-    hit_ratio = latest["buffer.hit_ratio_pct"]
+    latency = latest.get("query.p95_latency_ms")
+
+    # Metrics where HIGHER value is worse.
+    _HIGHER_IS_WORSE = frozenset({
+        "query.p95_latency_ms",
+        "wait.lock_ratio_pct",
+        "io.read_latency_ms",
+        "lock.blocked_sessions",
+        "replication.lag_sec",
+        "connection.active_count",
+        "connection.total_count",
+        "transaction.rollback_ratio_pct",
+        "checkpoint.write_latency_ms",
+    })
+    # Metrics where LOWER value is worse.
+    _LOWER_IS_WORSE = frozenset({
+        "buffer.hit_ratio_pct",
+    })
+
+    def _is_anomalous(metric: str, value: float, threshold: float) -> bool:
+        if metric in _HIGHER_IS_WORSE:
+            return value > threshold
+        if metric in _LOWER_IS_WORSE:
+            return value < threshold
+        return False
 
     if latency is None:
         findings.append("No runtime metrics found for target instance.")
         verdict = "insufficient_data"
     else:
-        if latency > applied_thresholds["query.p95_latency_ms"]:
-            findings.append(f"p95 latency elevated: {latency:.2f}ms")
-        if lock_ratio is not None and lock_ratio > applied_thresholds["wait.lock_ratio_pct"]:
-            findings.append(f"lock wait ratio elevated: {lock_ratio:.2f}%")
-        if io_latency is not None and io_latency > applied_thresholds["io.read_latency_ms"]:
-            findings.append(f"io read latency elevated: {io_latency:.2f}ms")
-        if blocked is not None and blocked > applied_thresholds["lock.blocked_sessions"]:
-            findings.append(f"blocked sessions high: {blocked:.0f}")
-        if hit_ratio is not None and hit_ratio < applied_thresholds["buffer.hit_ratio_pct"]:
-            findings.append(f"buffer hit ratio low: {hit_ratio:.2f}%")
+        for metric in metrics:
+            val = latest.get(metric)
+            th = applied_thresholds.get(metric)
+            if val is None or th is None:
+                continue
+            if _is_anomalous(metric, val, th):
+                direction = "elevated" if metric in _HIGHER_IS_WORSE else "low"
+                trend = ""
+                if metric in time_series and time_series[metric].get("trend"):
+                    trend = f", trend: {time_series[metric]['trend']}"
+                findings.append(
+                    f"{metric} {direction}: {val:.2f} "
+                    f"(threshold: {th:.2f}{trend})"
+                )
         verdict = "anomaly" if findings else "normal"
 
     trace_summary_path: Path | None = None
     if auto_trace and verdict == "anomaly":
         profile = "cpu-hotpath"
-        if io_latency is not None and io_latency > applied_thresholds["io.read_latency_ms"]:
+        io_lat = latest.get("io.read_latency_ms")
+        if io_lat is not None and io_lat > applied_thresholds.get("io.read_latency_ms", 999999):
             profile = "io-latency"
         trace_result = run_trace_profile(
             profile=profile,
@@ -91,11 +161,17 @@ def diagnose_latency_incident(
     evidence_json = bundle_dir / "evidence.json"
     runbook_md = bundle_dir / "runbook.md"
 
+    # Confidence level based on number of concurrent anomalies.
+    anomaly_count = len(findings)
+    confidence = "high" if anomaly_count >= 3 else "medium" if anomaly_count >= 1 else "low"
+
     payload = {
         "task_id": task_id,
         "instance": instance,
         "verdict": verdict,
+        "confidence": confidence,
         "latest_metrics": latest,
+        "time_series_aggregates": time_series,
         "thresholds": applied_thresholds,
         "findings": findings,
         "trace_summary": str(trace_summary_path) if trace_summary_path else None,
@@ -108,20 +184,45 @@ def diagnose_latency_incident(
         f"- task_id: {task_id}",
         f"- instance: {instance}",
         f"- verdict: {verdict}",
+        f"- confidence: {confidence}",
         "",
-        "## Findings",
+        "## Latest Metrics vs Thresholds",
     ]
+    for metric in metrics:
+        val = latest.get(metric)
+        th = applied_thresholds.get(metric, "N/A")
+        status = "OK" if val is None else ("WARN" if (isinstance(th, float) and metric != "buffer.hit_ratio_pct" and val > th) or (metric == "buffer.hit_ratio_pct" and isinstance(val, float) and val < th) else "OK")
+        runbook.append(f"- {metric}: {val} (threshold: {th}) [{status}]")
+
+    runbook.extend(
+        [
+            "",
+            "## Findings",
+        ]
+    )
     if findings:
         runbook.extend([f"- {item}" for item in findings])
     else:
         runbook.append("- no anomaly found")
+
     runbook.extend(
         [
             "",
             "## Next Validation Commands",
-            "- `SELECT * FROM pg_stat_activity WHERE wait_event IS NOT NULL;`",
-            "- `SELECT * FROM pg_locks WHERE granted = false;`",
-            "- `EXPLAIN (ANALYZE, BUFFERS) <slow_sql>;`",
+            "",
+            "Run the following SQL commands against the target PostgreSQL instance to gather diagnostic data:",
+        ]
+    )
+    for cmd_name, cmd_sql in _DIAGNOSTIC_SQL_COMMANDS:
+        runbook.append(f"\n### {cmd_name}")
+        runbook.append(f"```sql\n{cmd_sql}\n```")
+
+    runbook.extend(
+        [
+            "",
+            "## Trace Summary",
+            f"- auto_trace: {auto_trace}",
+            f"- trace_profile: {trace_summary_path.name if trace_summary_path else 'N/A'}",
             "",
         ]
     )
@@ -133,4 +234,5 @@ def diagnose_latency_incident(
         findings=findings,
         evidence_bundle=bundle_dir,
         trace_summary=trace_summary_path,
+        time_series=time_series,
     )

@@ -24,19 +24,25 @@ class _FakeCursor:
 
 
 def test_build_runtime_events_from_pg_values() -> None:
-    values = {
+    values: dict[str, float] = {
         "query.p95_latency_ms": 220.5,
         "wait.lock_ratio_pct": 35.0,
         "io.read_latency_ms": 12.3,
         "lock.blocked_sessions": 9.0,
         "replication.lag_sec": 4.2,
         "buffer.hit_ratio_pct": 91.7,
+        "connection.active_count": 30.0,
+        "connection.total_count": 80.0,
+        "transaction.rollback_ratio_pct": 3.5,
+        "checkpoint.write_latency_ms": 15.0,
     }
     events = _build_runtime_events_from_values("pg-main-01", values)
-    assert len(events) == 6
+    assert len(events) == 10
     names = {event.metric for event in events}
     assert "query.p95_latency_ms" in names
     assert "buffer.hit_ratio_pct" in names
+    assert "connection.active_count" in names
+    assert "checkpoint.write_latency_ms" in names
 
 
 def test_collect_query_p95_fallback_when_pg_stat_statements_missing() -> None:
@@ -47,6 +53,8 @@ def test_collect_query_p95_fallback_when_pg_stat_statements_missing() -> None:
         server_version_num=150008,
         has_pg_stat_statements=False,
         has_pg_stat_io=False,
+        has_pg_stat_bgwriter=True,
+        supported_features={"pg_stat_activity", "pg_stat_bgwriter"},
     )
     value = _collect_query_p95(cursor, caps, warnings)
     assert value == 123.0
@@ -61,6 +69,8 @@ def test_collect_io_latency_fallback_zero_when_pg_stat_io_missing() -> None:
         server_version_num=150008,
         has_pg_stat_statements=True,
         has_pg_stat_io=False,
+        has_pg_stat_bgwriter=True,
+        supported_features={"pg_stat_activity", "pg_stat_statements", "pg_stat_bgwriter"},
     )
     value = _collect_io_read_latency(cursor, caps, warnings)
     assert value == 0.0

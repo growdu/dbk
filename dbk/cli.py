@@ -15,7 +15,7 @@ from .collector_daemon import (
     stop_daemon,
 )
 from .collectors import collect_mock_runtime_metrics
-from .config import artifacts_root, runtime_db_path
+from .config import artifacts_root, runtime_db_path, validate_config
 from .diagnose import diagnose_latency_incident
 from .pg_collectors import PgCollectorError, collect_pg_health, collect_pg_runtime_metrics
 from .runtime_cleanup import cleanup_runtime_data
@@ -73,6 +73,12 @@ def cmd_init(_: argparse.Namespace) -> int:
     print(f"Initialized DBK runtime DB: {runtime_db_path()}")
     print(f"Initialized artifacts dir: {artifacts_root()}")
     return 0
+
+
+def cmd_validate(_: argparse.Namespace) -> int:
+    result = validate_config()
+    print(json.dumps(result.as_dict(), ensure_ascii=True, indent=2))
+    return 0 if result.ok else 2
 
 
 def cmd_collect(args: argparse.Namespace) -> int:
@@ -213,6 +219,8 @@ def cmd_runtime_cleanup(args: argparse.Namespace) -> int:
             skip_trace_db=args.skip_trace_db,
             skip_artifacts=args.skip_artifacts,
             vacuum=args.vacuum,
+            max_delete_per_run=args.max_delete_per_run,
+            safety_floor_hours=args.safety_floor_hours,
         )
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
@@ -230,6 +238,8 @@ def cmd_runtime_cleanup_daemon_start(args: argparse.Namespace) -> int:
             skip_trace_db=args.skip_trace_db,
             skip_artifacts=args.skip_artifacts,
             vacuum=args.vacuum,
+            max_delete_per_run=args.max_delete_per_run,
+            safety_floor_hours=args.safety_floor_hours,
             cwd=Path.cwd(),
         )
     except (ValueError, RuntimeError) as exc:
@@ -243,6 +253,8 @@ def cmd_runtime_cleanup_daemon_start(args: argparse.Namespace) -> int:
                 "interval_sec": state.interval_sec,
                 "older_than_hours": state.older_than_hours,
                 "instance": state.instance,
+                "max_delete_per_run": state.max_delete_per_run,
+                "safety_floor_hours": state.safety_floor_hours,
             },
             ensure_ascii=True,
             indent=2,
@@ -273,6 +285,8 @@ def cmd_runtime_cleanup_daemon_run(args: argparse.Namespace) -> int:
         skip_trace_db=args.skip_trace_db,
         skip_artifacts=args.skip_artifacts,
         vacuum=args.vacuum,
+        max_delete_per_run=args.max_delete_per_run,
+        safety_floor_hours=args.safety_floor_hours,
         state_path=state_path,
         history_path=history_path,
     )
@@ -296,20 +310,46 @@ def cmd_runtime_cleanup_report(args: argparse.Namespace) -> int:
 
 def cmd_metrics(args: argparse.Namespace) -> int:
     store = _store()
-    rows = store.query_latest_metric(metric=args.metric, instance=args.instance, limit=args.limit)
-    output = [
-        {
-            "ts": row["ts"],
-            "instance": row["instance"],
-            "source": row["source"],
-            "category": row["category"],
-            "metric": row["metric"],
-            "value": row["value"],
-            "labels": json.loads(row["labels_json"] or "{}"),
-        }
-        for row in rows
-    ]
-    print(json.dumps(output, ensure_ascii=True, indent=2))
+    if getattr(args, "metric_from", None) is not None:
+        # Range query mode.
+        rows = store.query_metric_range(
+            metric=args.metric,
+            instance=args.instance,
+            from_ts=args.metric_from,
+            to_ts=args.metric_to,
+            limit=args.metric_limit,
+        )
+        if args.aggregate:
+            agg = RuntimeStore.aggregate_rows(rows)
+            print(json.dumps(agg, ensure_ascii=True, indent=2))
+        else:
+            output = [
+                {
+                    "ts": row["ts"],
+                    "instance": row["instance"],
+                    "source": row["source"],
+                    "metric": row["metric"],
+                    "value": row["value"],
+                }
+                for row in rows
+            ]
+            print(json.dumps(output, ensure_ascii=True, indent=2))
+    else:
+        # Latest query mode (original behavior).
+        rows = store.query_latest_metric(metric=args.metric, instance=args.instance, limit=args.limit)
+        output = [
+            {
+                "ts": row["ts"],
+                "instance": row["instance"],
+                "source": row["source"],
+                "category": row["category"],
+                "metric": row["metric"],
+                "value": row["value"],
+                "labels": json.loads(row["labels_json"] or "{}"),
+            }
+            for row in rows
+        ]
+        print(json.dumps(output, ensure_ascii=True, indent=2))
     return 0
 
 
@@ -371,6 +411,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_init = sub.add_parser("init", help="Initialize runtime DB and artifact folders")
     p_init.set_defaults(func=cmd_init)
+
+    p_validate = sub.add_parser("validate", help="Validate DBK configuration and environment")
+    p_validate.set_defaults(func=cmd_validate)
 
     p_collect = sub.add_parser("collect", help="Collect runtime metrics")
     p_collect.add_argument("--instance", default="pg-main-01")
@@ -441,6 +484,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_metrics.add_argument("--metric", required=True)
     p_metrics.add_argument("--instance")
     p_metrics.add_argument("--limit", type=int, default=20)
+    # Range query options:
+    p_metrics.add_argument("--from", dest="metric_from", help="Start timestamp (ISO 8601)")
+    p_metrics.add_argument("--to", dest="metric_to", help="End timestamp (ISO 8601)")
+    p_metrics.add_argument("--limit-range", dest="metric_limit", type=int, default=1000, help="Max rows for range query")
+    p_metrics.add_argument("--aggregate", action="store_true", help="Aggregate range query results (avg/max/min)")
     p_metrics.set_defaults(func=cmd_metrics)
 
     p_runtime = sub.add_parser("runtime", help="Runtime maintenance operations")
@@ -452,6 +500,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_runtime_cleanup.add_argument("--skip-trace-db", action="store_true")
     p_runtime_cleanup.add_argument("--skip-artifacts", action="store_true")
     p_runtime_cleanup.add_argument("--vacuum", action="store_true")
+    p_runtime_cleanup.add_argument(
+        "--safety-floor-hours",
+        type=float,
+        dest="safety_floor_hours",
+        help="Minimum retention hours (safety floor). Cleanup is refused if --older-than-hours is below this. Default: 24.0",
+    )
+    p_runtime_cleanup.add_argument(
+        "--max-delete-per-run",
+        type=int,
+        dest="max_delete_per_run",
+        help="Maximum rows deleted per cleanup run. Default: 100000. Set to 0 for unlimited.",
+    )
     p_runtime_cleanup.set_defaults(func=cmd_runtime_cleanup)
 
     p_runtime_cleanup_daemon = runtime_sub.add_parser(
@@ -470,6 +530,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_runtime_cleanup_daemon_start.add_argument("--skip-trace-db", action="store_true")
     p_runtime_cleanup_daemon_start.add_argument("--skip-artifacts", action="store_true")
     p_runtime_cleanup_daemon_start.add_argument("--vacuum", action="store_true")
+    p_runtime_cleanup_daemon_start.add_argument(
+        "--safety-floor-hours",
+        type=float,
+        dest="safety_floor_hours",
+        help="Minimum retention hours. Default: 24.0",
+    )
+    p_runtime_cleanup_daemon_start.add_argument(
+        "--max-delete-per-run",
+        type=int,
+        dest="max_delete_per_run",
+        help="Max rows deleted per run. Default: 100000.",
+    )
     p_runtime_cleanup_daemon_start.set_defaults(func=cmd_runtime_cleanup_daemon_start)
 
     p_runtime_cleanup_daemon_status = cleanup_daemon_sub.add_parser("status", help="Show cleanup daemon status")
@@ -485,6 +557,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_runtime_cleanup_daemon_run.add_argument("--skip-trace-db", action="store_true")
     p_runtime_cleanup_daemon_run.add_argument("--skip-artifacts", action="store_true")
     p_runtime_cleanup_daemon_run.add_argument("--vacuum", action="store_true")
+    p_runtime_cleanup_daemon_run.add_argument("--safety-floor-hours", type=float, dest="safety_floor_hours")
+    p_runtime_cleanup_daemon_run.add_argument("--max-delete-per-run", type=int, dest="max_delete_per_run")
     p_runtime_cleanup_daemon_run.add_argument("--state-path", help=argparse.SUPPRESS)
     p_runtime_cleanup_daemon_run.add_argument("--history-path", help=argparse.SUPPRESS)
     p_runtime_cleanup_daemon_run.set_defaults(func=cmd_runtime_cleanup_daemon_run)

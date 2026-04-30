@@ -11,6 +11,11 @@ DEFAULT_THRESHOLDS: dict[str, float] = {
     "lock.blocked_sessions": 5.0,
     "replication.lag_sec": 3.0,
     "buffer.hit_ratio_pct": 95.0,  # lower is worse
+    # New metrics:
+    "connection.active_count": 100.0,  # active backend connections
+    "connection.total_count": 200.0,  # total connections (incl. idle)
+    "transaction.rollback_ratio_pct": 10.0,  # rollback ratio upper bound
+    "checkpoint.write_latency_ms": 100.0,  # checkpoint avg write latency
 }
 
 

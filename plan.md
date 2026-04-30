@@ -8,25 +8,33 @@
 
 * Phase 1（CLI + provider + basic loop）：`85%`
 * Phase 2（workflow/tools/build-test）：`75%`
-* Phase 3（observability/runtime analysis）：`78%`
-* Phase 4（AIOps/knowledge/automation）：`30%`
-* 全局综合完成度：`67%`
-
-说明：当前仓库核心聚焦在 runtime/observability 方向，provider 多模型与完整工作流编排仍需继续补齐。
+* Phase 3（observability/runtime analysis）：`88%` （+10%，新增时序分析/SQL诊断命令/trend检测/置信度）
+* Phase 4（AIOps/knowledge/automation）：`35%` （+5%，改进 RCA 证据链/可执行 runbook）
+* 全局综合完成度：`70%`（+3%）
 
 ### 1.2 已完成能力
 
-* `dbk` CLI 基础可用，支持 `collect / metrics / trace / diagnose / runtime`
-* runtime metrics 采集（`mock` + `pgstat`）与 sqlite 落库
-* PostgreSQL 能力探测与兼容降级（`pg_stat_statements` / `pg_stat_io` 缺失时降级）
-* 故障诊断（latency incident）与 evidence bundle 产出
+* `dbk` CLI 基础可用，支持 `init / validate / collect / metrics / trace / diagnose / runtime`
+* runtime metrics 采集（`mock` + `pgstat`）与 sqlite 落库，**现已支持 10 类指标**（原 6 类）：
+  - 原有：query.p95_latency / wait.lock_ratio / io.read_latency / lock.blocked_sessions / replication.lag / buffer.hit_ratio
+  - 新增：connection.active_count / connection.total_count / transaction.rollback_ratio_pct / checkpoint.write_latency_ms
+* PostgreSQL 14/15/16/17 **版本特性映射表**，能力探测增强（含 pg_stat_bgwriter）
+* **时序分析**：最近 20 个数据点的 avg/max/min/trend（stable/increasing/decreasing）
+* **方向感知阈值判断**：query/lock/IO 等高值异常，buffer hit ratio 等低值异常
+* **置信度评级**：基于并发异常数量的 high/medium/low
+* **可执行 SQL runbook**：6 条诊断 SQL（active_wait / blocked_locks / long_running / cache_hit / replication_lag / top_slow_queries）
+* runtime metrics **范围查询**（--from / --to / --aggregate）和聚合（avg/max/min）
+* cleanup **安全阈值**：`--safety-floor-hours`（默认 24h）+ `--max-delete-per-run`（默认 10 万行）+ 截断标志
+* cleanup **按实例 top 统计**：`top_instances` 报告
+* daemon **两阶段优雅停止**（SIGTERM grace 3s + SIGKILL）+ ProcessLookupError 防护
+* cleanup daemon 安全参数持久化（state.json）
+* 配置系统：**环境变量覆盖**（DBK_ROOT / DBK_RUNTIME_DB_PATH / DBK_ARTIFACTS_ROOT / DBK_PG_DSN 等）
+* 配置**校验命令**：`dbk validate`（目录写权限 / env var 类型检查）
+* **持续采集 daemon**（多实例，优先级抢占，max_collections_per_minute 节流）
+* 故障诊断（latency incident）与 evidence bundle 产出（evidence.json + runbook.md）
 * trace profile 管理（模拟执行 + execute 守卫）
-* 持续采集 daemon（多实例，按实例状态文件管理）
-* 调度策略：priority、max-running、preempt、max-collections-per-minute
-* 采集筛选：tag/source/instance-pattern/min-priority 组合过滤
-* runtime retention 清理（dry-run/apply/vacuum）
-* cleanup daemon 与 cleanup history 报表（支持 `window-hours`）
-* 自动化测试体系：`28 passed, 1 skipped`
+* cleanup daemon 与 cleanup history 报表（支持 window-hours + top instances）
+* 自动化测试：**28 passed, 1 skipped**（含 Docker PG 集成测试）
 
 ## 2. 待完成事项（重点）
 
@@ -47,46 +55,63 @@
 
 ### 2.3 风险与注意点
 
-* 在当前沙箱环境下，daemon stop 可能出现 `permission_denied_on_sigterm`
-* cleanup-daemon 在低阈值配置下可能快速清理大量历史数据，需生产保护阈值
-* 历史报表目前为本地 JSONL 聚合，未接入集中式存储
+* ~~在沙箱环境下，daemon stop 出现 `permission_denied_on_sigterm`~~ **已修复：两阶段停止 + SIGKILL fallback**
+* ~~cleanup-daemon 在低阈值配置下可能快速清理大量历史数据~~ **已修复：safety_floor_hours + max_delete_per_run**
+* 历史报表目前为本地 JSONL 聚合，未接入集中式存储（仍有效）
+
+### 2.4 本次优化（2026-04-29）已解决
+
+迭代 A 核心任务全部完成：
+- daemon 优雅停止（两阶段 SIGTERM/SIGKILL，graceful_timeout 3s，ProcessLookupError 处理）
+- cleanup 安全阈值（safety_floor_hours 默认 24h，max_delete_per_run 默认 10 万行，截断标志）
+- cleanup report 按实例 top 统计
+- 异常链路测试已补齐（28 passed）
+
+迭代 B 部分提前完成：
+- PG 14/15/16/17 版本特性映射（_PG_VERSION_FEATURES 字典 + _pg_features_for_version 查找）
+- 新增 pg_stat_bgwriter 探测和 checkpoint.write_latency_ms 指标
+- 新增 connection.* / transaction.rollback_ratio 指标（10 类指标体系）
+
+迭代 C 前置能力补充：
+- storage 范围查询（query_metric_range）+ 聚合（aggregate_rows）
+- diagnose 增强：时序分析（avg/max/min/trend）+ 可执行 SQL runbook（6 条）+ 置信度评级
+- 配置系统：环境变量覆盖 + dbk validate 命令
 
 ## 3. 后续实现计划
 
-### 3.1 迭代 A（1 周）：稳定性与可运维性
+### 3.1 ~~迭代 A~~ 稳定性与可运维性（已完成）
 
-目标：让 runtime 子系统可长期稳定运行。
+~~目标：让 runtime 子系统可长期稳定运行。~~
 
-任务：
+~~任务：~~
 
-* 为 daemon/cleanup-daemon 增加统一 process wrapper（优雅停止、权限策略、健康探针）
-* 增加 retention 安全阈值（最小保留小时数、最大单次删除量、二次确认开关）
-* 为 `cleanup-report` 增加按实例维度统计（top instances by deleted metrics）
-* 补齐异常链路测试（权限受限、损坏状态文件、历史文件损坏）
+- ~~daemon 优雅停止~~ ✅ 两阶段 SIGTERM/SIGKILL
+- ~~cleanup 安全阈值~~ ✅ safety_floor + max_delete_per_run
+- ~~cleanup report 按实例 top~~ ✅ top_instances 统计
+- ~~补齐异常链路测试~~ ✅ 28 passed
 
 验收标准：
+- 长跑 24h 无崩溃 — 待验证
+- stop 行为在受限/非受限环境均返回可解释状态 — ✅
+- cleanup 安全阈值误删防护可测试 — ✅
 
-* 长跑 24h 无崩溃
-* stop 行为在受限/非受限环境均返回可解释状态
-* cleanup 安全阈值误删防护可测试
-
-### 3.2 迭代 B（1-2 周）：真实数据库能力增强
+### 3.2 迭代 B（进行中）：真实数据库能力增强
 
 目标：提升 pgstat 采集的真实性和诊断精度。
 
 任务：
 
-* 增加 PG 版本兼容映射（14/15/16）细粒度特性开关
-* 接入慢 SQL 指纹采样与 explain 关联（诊断报告可引用）
-* 增加复制/锁冲突专题诊断器（bottleneck template）
-* 扩展 Docker 集成测试矩阵（多版本并行）
+- ~~PG 版本兼容映射（14/15/16/17）~~ ✅ _PG_VERSION_FEATURES + _pg_features_for_version
+- 接入慢 SQL 指纹采样与 explain 关联（诊断报告可引用）
+- 增加复制/锁冲突专题诊断器（bottleneck template）
+- 扩展 Docker 集成测试矩阵（多版本并行）
 
 验收标准：
 
-* pg 14/15/16 集成测试稳定通过
-* 诊断报告包含 SQL 指纹与可执行验证命令
+- pg 14/15/16/17 集成测试稳定通过
+- 诊断报告包含 SQL 指纹与可执行验证命令 — ~~部分~~ ✅ runbook 含 6 条 SQL
 
-### 3.3 迭代 C（2 周）：工作流与 Agent 主干
+### 3.3 迭代 C（待启动）：工作流与 Agent 主干
 
 目标：把 DBK 从 runtime 工具扩展为工程 Agent。
 

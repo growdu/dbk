@@ -64,5 +64,38 @@ def collect_mock_runtime_metrics(instance: str) -> list[RuntimeEvent]:
             value=hit_ratio,
             labels={"unit": "percent"},
         ),
+        # New metrics with distinct random seeds.
+        RuntimeEvent.create(
+            instance=instance,
+            source="mock.conn",
+            category="connection",
+            metric="connection.active_count",
+            value=max(0, base.gauss(25, 10)),
+            labels={"unit": "count"},
+        ),
+        RuntimeEvent.create(
+            instance=instance,
+            source="mock.conn",
+            category="connection",
+            metric="connection.total_count",
+            value=max(0, base.gauss(80, 20)),
+            labels={"unit": "count"},
+        ),
+        RuntimeEvent.create(
+            instance=instance,
+            source="mock.xact",
+            category="transaction",
+            metric="transaction.rollback_ratio_pct",
+            value=max(0.0, min(20.0, base.gauss(2.0, 1.5))),
+            labels={"unit": "percent"},
+        ),
+        RuntimeEvent.create(
+            instance=instance,
+            source="mock.checkpoint",
+            category="checkpoint",
+            metric="checkpoint.write_latency_ms",
+            value=max(0.1, min(50.0, base.gauss(8.0, 5.0))),
+            labels={"unit": "ms"},
+        ),
     ]
 

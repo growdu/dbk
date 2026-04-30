@@ -144,7 +144,14 @@ class RuntimeStore:
         cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=older_than_hours)
         return cutoff.isoformat()
 
-    def count_metrics_older_than(self, *, older_than_hours: float, instance: str | None = None) -> int:
+    def count_metrics_older_than(
+        self, *, older_than_hours: float, instance: str | None = None, safety_floor_hours: float | None = None
+    ) -> int:
+        if safety_floor_hours is not None and older_than_hours < safety_floor_hours:
+            raise ValueError(
+                f"older_than_hours={older_than_hours} is below the minimum retention "
+                f"floor of {safety_floor_hours} hours. Refusing to delete data."
+            )
         cutoff = self._cutoff_iso(older_than_hours=older_than_hours)
         sql = "SELECT COUNT(*) FROM runtime_metric WHERE ts < ?"
         params: list[object] = [cutoff]
@@ -155,16 +162,65 @@ class RuntimeStore:
             row = conn.execute(sql, tuple(params)).fetchone()
             return int(row[0] if row else 0)
 
-    def delete_metrics_older_than(self, *, older_than_hours: float, instance: str | None = None) -> int:
+    def count_metrics_by_instance_older_than(
+        self, *, older_than_hours: float
+    ) -> dict[str, int]:
+        """Return a dict of {instance: count} for metrics older than the cutoff."""
         cutoff = self._cutoff_iso(older_than_hours=older_than_hours)
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT instance, COUNT(*) FROM runtime_metric WHERE ts < ? GROUP BY instance",
+                (cutoff,),
+            )
+            return {str(r[0]): int(r[1]) for r in rows}
+
+    def delete_metrics_older_than(
+        self,
+        *,
+        older_than_hours: float,
+        instance: str | None = None,
+        max_delete: int | None = None,
+        safety_floor_hours: float | None = None,
+    ) -> tuple[int, bool]:
+        """Delete metrics older than cutoff. Returns (deleted, truncated).
+
+        If max_delete is set, deletes at most max_delete rows and sets truncated=True
+        if more rows match the condition.
+        If safety_floor_hours is set and older_than_hours < safety_floor_hours,
+        raises ValueError.
+        """
+        if safety_floor_hours is not None and older_than_hours < safety_floor_hours:
+            raise ValueError(
+                f"older_than_hours={older_than_hours} is below the minimum retention "
+                f"floor of {safety_floor_hours} hours. Refusing to delete data."
+            )
+        if max_delete is not None and max_delete <= 0:
+            return 0, False
+
+        cutoff = self._cutoff_iso(older_than_hours=older_than_hours)
+        if max_delete is not None:
+            sql = "DELETE FROM runtime_metric WHERE ts < ?"
+            params: list[object] = [cutoff]
+            if instance:
+                sql += " AND instance = ?"
+                params.append(instance)
+            sql += f" LIMIT {max_delete}"
+            with self.connect() as conn:
+                cur = conn.execute(sql, tuple(params))
+                deleted = int(cur.rowcount or 0)
+            truncated = self.count_metrics_older_than(
+                older_than_hours=older_than_hours, instance=instance
+            ) > deleted
+            return deleted, truncated
+
         sql = "DELETE FROM runtime_metric WHERE ts < ?"
-        params: list[object] = [cutoff]
+        params = [cutoff]
         if instance:
             sql += " AND instance = ?"
             params.append(instance)
         with self.connect() as conn:
             cur = conn.execute(sql, tuple(params))
-            return int(cur.rowcount or 0)
+            return int(cur.rowcount or 0), False
 
     def count_trace_artifacts_older_than(self, *, older_than_hours: float) -> int:
         cutoff = self._cutoff_iso(older_than_hours=older_than_hours)
@@ -187,3 +243,56 @@ class RuntimeStore:
     def vacuum(self) -> None:
         with self.connect() as conn:
             conn.execute("VACUUM")
+
+    def query_metric_range(
+        self,
+        *,
+        metric: str,
+        instance: str | None = None,
+        from_ts: str | None = None,
+        to_ts: str | None = None,
+        limit: int = 1000,
+    ) -> list[sqlite3.Row]:
+        """Query metrics within a time range, ordered oldest-first.
+
+        from_ts / to_ts: ISO format timestamps. Both are inclusive.
+        Returns rows ordered by ts ASC (oldest first).
+        """
+        sql = """
+            SELECT ts, instance, source, category, metric, value, labels_json
+            FROM runtime_metric
+            WHERE metric = ?
+        """
+        params: list[object] = [metric]
+        if instance:
+            sql += " AND instance = ?"
+            params.append(instance)
+        if from_ts:
+            sql += " AND ts >= ?"
+            params.append(from_ts)
+        if to_ts:
+            sql += " AND ts <= ?"
+            params.append(to_ts)
+        sql += " ORDER BY ts ASC LIMIT ?"
+        params.append(limit)
+        with self.connect() as conn:
+            return list(conn.execute(sql, tuple(params)))
+
+    @staticmethod
+    def aggregate_rows(rows: list[sqlite3.Row]) -> dict[str, float | None]:
+        """Compute avg / max / min / count over a list of metric rows.
+
+        Returns a dict with keys: avg, max, min, count, first_ts, last_ts.
+        Returns empty dict if rows is empty.
+        """
+        if not rows:
+            return {}
+        values = [float(r["value"]) for r in rows]
+        return {
+            "avg": sum(values) / len(values),
+            "max": max(values),
+            "min": min(values),
+            "count": len(values),
+            "first_ts": rows[0]["ts"],
+            "last_ts": rows[-1]["ts"],
+        }
