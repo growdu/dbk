@@ -82,6 +82,85 @@ class AlertRule:
         )
 
 
+# --------------------------------------------------------------------------
+# Built-in default rules (9 rules covering latency/lock/IO/replication/buffer/connection/rollback/checkpoint)
+# --------------------------------------------------------------------------
+DEFAULT_ALERT_RULES: list["AlertRule"] = [
+    AlertRule(
+        name="query_latency_high",
+        metric="query_latency_ms",
+        operator="gt",
+        threshold=1000.0,
+        severity=Severity.WARNING,
+        description="Average query latency exceeds 1 second",
+    ),
+    AlertRule(
+        name="connection_high",
+        metric="connection_count",
+        operator="gt",
+        threshold=80.0,
+        severity=Severity.WARNING,
+        description="Connection usage above 80% of max_connections",
+    ),
+    AlertRule(
+        name="connection_critical",
+        metric="connection_count",
+        operator="gt",
+        threshold=95.0,
+        severity=Severity.CRITICAL,
+        description="Connection usage above 95% of max_connections",
+    ),
+    AlertRule(
+        name="slow_queries",
+        metric="slow_query_count",
+        operator="gt",
+        threshold=10.0,
+        severity=Severity.WARNING,
+        description="More than 10 slow queries in the last interval",
+    ),
+    AlertRule(
+        name="lock_wait_timeout",
+        metric="lock_wait_count",
+        operator="gt",
+        threshold=5.0,
+        severity=Severity.WARNING,
+        description="More than 5 concurrent lock waits detected",
+    ),
+    AlertRule(
+        name="replication_lag",
+        metric="replication_lag_sec",
+        operator="gt",
+        threshold=30.0,
+        severity=Severity.CRITICAL,
+        description="Replication lag exceeds 30 seconds",
+    ),
+    AlertRule(
+        name="buffer_hit_ratio_low",
+        metric="buffer_hit_ratio",
+        operator="lt",
+        threshold=90.0,
+        severity=Severity.WARNING,
+        description="Buffer cache hit ratio below 90%",
+    ),
+    AlertRule(
+        name="checkpoint_slow",
+        metric="checkpoint_duration_ms",
+        operator="gt",
+        threshold=500.0,
+        severity=Severity.WARNING,
+        description="Checkpoint duration exceeds 500ms",
+    ),
+    AlertRule(
+        name="rollback_ratio_high",
+        metric="rollback_ratio",
+        operator="gt",
+        threshold=0.2,
+        severity=Severity.WARNING,
+        description="Transaction rollback ratio exceeds 20%",
+    ),
+]
+
+
 @dataclass(slots=True)
 class Alert:
     """A triggered alert instance."""

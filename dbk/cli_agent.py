@@ -56,6 +56,14 @@ def _build_parser() -> argparse.ArgumentParser:
     # session-list subcommand.
     sub.add_parser("session-list", help="List persisted sessions")
 
+    # session-clear subcommand.
+    p_session_clear = sub.add_parser("session-clear", help="Clear/reset session data")
+    p_session_clear.add_argument("--session", help="Session ID to delete (deletes all if omitted)")
+    p_session_clear.add_argument("--all", action="store_true", help="Delete all sessions")
+
+    # tools-list subcommand.
+    sub.add_parser("tools-list", help="List registered agent tools")
+
     return parser
 
 
@@ -68,7 +76,37 @@ def cmd_agent_info(agent: Agent) -> int:
 def cmd_session_list() -> int:
     store = SessionStore()
     sessions = store.list_sessions()
-    print(json.dumps({"sessions": sessions}, indent=2, ensure_ascii=True))
+    print(json.dumps({"sessions": sessions, "count": len(sessions)}, indent=2, ensure_ascii=True))
+    return 0
+
+
+def cmd_session_clear(args: argparse.Namespace) -> int:
+    store = SessionStore()
+    if args.session:
+        deleted = store.delete(args.session)
+        if deleted:
+            print(json.dumps({"deleted": args.session, "count": 1}))
+        else:
+            print(json.dumps({"deleted": None, "error": f"Session not found: {args.session}"}))
+            return 2
+    elif args.all:
+        sessions = store.list_sessions(limit=10000)
+        deleted = 0
+        for s in sessions:
+            if store.delete(s["session_id"]):
+                deleted += 1
+        print(json.dumps({"deleted_all": True, "count": deleted}))
+    else:
+        print("Specify --session ID or --all to clear sessions.", file=sys.stderr)
+        return 2
+    return 0
+
+
+def cmd_tools_list() -> int:
+    from dbk.agent.tools import ToolRegistry
+    registry = ToolRegistry()
+    schemas = registry.tool_schemas()
+    print(json.dumps({"tools": schemas, "count": len(schemas)}, indent=2, ensure_ascii=True))
     return 0
 
 
@@ -203,6 +241,12 @@ def main(argv: list[str] | None = None) -> int:
     # Handle subcommands.
     if args.subcmd == "session-list":
         return cmd_session_list()
+
+    if args.subcmd == "session-clear":
+        return cmd_session_clear(args)
+
+    if args.subcmd == "tools-list":
+        return cmd_tools_list()
 
     if args.subcmd == "workflow-advance":
         return cmd_workflow_advance(args)

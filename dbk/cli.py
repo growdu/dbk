@@ -42,7 +42,7 @@ from .alerting.daemon import (
     stop_alert_daemon,
 )
 from .alerting.engine import load_rules as load_alert_rules
-from .alerting.models import AlertState, Severity
+from .alerting.models import AlertState, Severity, DEFAULT_ALERT_RULES
 from .config import dbk_root
 from .storage import RuntimeStore
 from .thresholds import load_thresholds
@@ -411,7 +411,11 @@ def cmd_trace_run(args: argparse.Namespace) -> int:
 def cmd_alert_rules_list(args: argparse.Namespace) -> int:
     rules_path = Path(args.rules_path) if args.rules_path else None
     try:
-        rules = load_alert_rules(rules_path) if rules_path else []
+        if rules_path:
+            rules = load_alert_rules(rules_path)
+        else:
+            # Use built-in default rules
+            rules = list(DEFAULT_ALERT_RULES)
     except (FileNotFoundError, ValueError) as exc:
         print(f"Error loading rules: {exc}", file=sys.stderr)
         return 2
@@ -437,6 +441,35 @@ def cmd_alert_rules_validate(args: argparse.Namespace) -> int:
     except (FileNotFoundError, ValueError) as exc:
         print(json.dumps({"valid": False, "error": str(exc)}, ensure_ascii=True, indent=2))
         return 2
+
+
+def cmd_alert_rules_add(args: argparse.Namespace) -> int:
+    from dbk.alerting.models import AlertRule, Severity
+    rule = AlertRule(
+        name=args.name,
+        metric=args.metric,
+        operator=args.operator,
+        threshold=args.threshold,
+        severity=Severity(args.severity),
+        description=args.description,
+        instance=args.instance,
+        minimum_duration_sec=args.min_duration,
+        cooldown_sec=args.cooldown,
+    )
+    print(json.dumps({"added": rule.to_dict()}, ensure_ascii=True, indent=2))
+    return 0
+
+
+def cmd_alert_rules_export(args: argparse.Namespace) -> int:
+    if args.include_builtin:
+        rules = list(DEFAULT_ALERT_RULES)
+    else:
+        rules = list(DEFAULT_ALERT_RULES)
+    path = Path(args.path)
+    payload = {"rules": [r.to_dict() for r in rules]}
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=True))
+    print(json.dumps({"exported": str(path), "count": len(rules)}))
+    return 0
 
 
 def cmd_alert_rules_eval(args: argparse.Namespace) -> int:
@@ -850,8 +883,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_agent_info = agent_sub.add_parser("info", help="Show agent configuration")
     p_agent_info.set_defaults(func=lambda a: _get_agent_main()(["--info"]))
 
-    p_agent_session_list = agent_sub.add_parser("sessions", help="List agent sessions")
-    p_agent_session_list.set_defaults(func=lambda a: _get_agent_main()(["session-list"]))
+    def _do_sessions(args: argparse.Namespace) -> int:
+        subcmd = "session-clear" if args.clear else "session-list"
+        extra = []
+        if args.clear:
+            if args.session:
+                extra += ["--session", args.session]
+            if args.all:
+                extra += ["--all"]
+        return _get_agent_main()([subcmd] + extra)
+
+    p_agent_session_list = agent_sub.add_parser("sessions", help="List/clear agent sessions")
+    p_agent_session_list.add_argument("--clear", action="store_true", help="Clear sessions")
+    p_agent_session_list.add_argument("--session", help="Session ID to delete")
+    p_agent_session_list.add_argument("--all", action="store_true", help="Delete all sessions")
+    p_agent_session_list.set_defaults(func=_do_sessions)
+
+    p_agent_tools = agent_sub.add_parser("tools", help="Show registered agent tools")
+    p_agent_tools.set_defaults(func=lambda a: _get_agent_main()(["tools-list"]))
 
     p_agent_workflow = agent_sub.add_parser("workflow", help="Manage workflow stage")
     p_agent_workflow.add_argument("--session", required=True)
@@ -883,6 +932,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_alert_rules_eval.add_argument("--webhook-url")
     p_alert_rules_eval.add_argument("--webhook-secret")
     p_alert_rules_eval.set_defaults(func=cmd_alert_rules_eval)
+
+    p_alert_rules_add = alert_rules_sub.add_parser("add", help="Add a new alert rule")
+    p_alert_rules_add.add_argument("--name", required=True)
+    p_alert_rules_add.add_argument("--metric", required=True)
+    p_alert_rules_add.add_argument("--operator", required=True, choices=["gt", "lt", "gte", "lte", "eq"])
+    p_alert_rules_add.add_argument("--threshold", type=float, required=True)
+    p_alert_rules_add.add_argument("--severity", required=True, choices=["info", "warning", "critical"])
+    p_alert_rules_add.add_argument("--description", default="")
+    p_alert_rules_add.add_argument("--instance")
+    p_alert_rules_add.add_argument("--min-duration", type=int, default=0)
+    p_alert_rules_add.add_argument("--cooldown", type=int, default=300)
+    p_alert_rules_add.set_defaults(func=cmd_alert_rules_add)
+
+    p_alert_rules_export = alert_rules_sub.add_parser("export", help="Export rules to a JSON file")
+    p_alert_rules_export.add_argument("--path", required=True, help="Output file path")
+    p_alert_rules_export.add_argument("--include-builtin", action="store_true", help="Include built-in rules")
+    p_alert_rules_export.set_defaults(func=cmd_alert_rules_export)
 
     # --- alert daemon ---
     p_alert_daemon = alert_sub.add_parser("daemon", help="Manage alert daemon")

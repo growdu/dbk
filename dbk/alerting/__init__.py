@@ -34,4 +34,5 @@ __all__ = [
     "LogNotifier",
     "Severity",
     "WebhookNotifier",
+    "DEFAULT_ALERT_RULES",
 ]
