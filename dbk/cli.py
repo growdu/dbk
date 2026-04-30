@@ -26,9 +26,38 @@ from .runtime_cleanup_daemon import (
     start_cleanup_daemon,
     stop_cleanup_daemon,
 )
+from .agent.state import WorkflowStage
+from .alerting import (
+    AlertEngine,
+    AlertPrometheusExporter,
+    AlertStore,
+    AlertRule,
+    LogNotifier,
+    WebhookNotifier,
+)
+from .alerting.daemon import (
+    alert_daemon_status,
+    run_alert_loop,
+    start_alert_daemon,
+    stop_alert_daemon,
+)
+from .alerting.engine import load_rules as load_alert_rules
+from .alerting.models import AlertState, Severity
+from .config import dbk_root
 from .storage import RuntimeStore
 from .thresholds import load_thresholds
 from .tracing import run_trace_profile, supported_profiles
+
+# Agent CLI lazy import (avoids loading LLM packages until needed).
+_agent_cli_main: callable | None = None
+
+
+def _get_agent_main() -> callable:
+    global _agent_cli_main
+    if _agent_cli_main is None:
+        from . import cli_agent
+        _agent_cli_main = cli_agent.main
+    return _agent_cli_main
 
 
 def _store() -> RuntimeStore:
@@ -379,6 +408,216 @@ def cmd_trace_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_alert_rules_list(args: argparse.Namespace) -> int:
+    rules_path = Path(args.rules_path) if args.rules_path else None
+    try:
+        rules = load_alert_rules(rules_path) if rules_path else []
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"Error loading rules: {exc}", file=sys.stderr)
+        return 2
+    if args.format == "text":
+        if not rules:
+            print("No rules loaded.")
+            return 0
+        for r in rules:
+            print(f"  {r.name}: {r.metric} {r.operator} {r.threshold} [{r.severity.value}]")
+            if r.instance:
+                print(f"    instance={r.instance}")
+            print(f"    {r.description}")
+    else:
+        print(json.dumps({"rules": [r.to_dict() for r in rules], "count": len(rules)}, ensure_ascii=True, indent=2))
+    return 0
+
+
+def cmd_alert_rules_validate(args: argparse.Namespace) -> int:
+    try:
+        rules = load_alert_rules(Path(args.rules_path))
+        print(json.dumps({"valid": True, "count": len(rules), "rules": [r.to_dict() for r in rules]}, ensure_ascii=True, indent=2))
+        return 0
+    except (FileNotFoundError, ValueError) as exc:
+        print(json.dumps({"valid": False, "error": str(exc)}, ensure_ascii=True, indent=2))
+        return 2
+
+
+def cmd_alert_rules_eval(args: argparse.Namespace) -> int:
+    try:
+        rules = load_alert_rules(Path(args.rules_path))
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"Error loading rules: {exc}", file=sys.stderr)
+        return 2
+
+    engine = AlertEngine(rules=rules)
+    notifiers: list[AlertNotifier] = [LogNotifier()]
+    if args.webhook_url:
+        notifiers.append(WebhookNotifier(url=args.webhook_url, secret=args.webhook_secret))
+
+    def on_event(event: AlertEvent) -> None:
+        for n in notifiers:
+            n.send(event)
+
+    engine.add_listener(on_event)
+
+    store = _store()
+    rt_metrics = _collect_metrics_for_alerting(store, instance=args.instance)
+    events = engine.evaluate_batch(rt_metrics)
+
+    firing = engine.get_firing_alerts()
+    counts = engine.get_firing_count_by_severity()
+    payload = {
+        "events": [{"type": e.type, "alert": e.alert.to_dict()} for e in events],
+        "firing": [a.to_dict() for a in firing],
+        "summary": {
+            "total_evaluated": len(rules),
+            "firing_count": engine.get_active_count(),
+            "by_severity": {k.value: v for k, v in counts.items()},
+        },
+    }
+    print(json.dumps(payload, ensure_ascii=True, indent=2))
+    return 0
+
+
+def cmd_alert_daemon_start(args: argparse.Namespace) -> int:
+    try:
+        state = start_alert_daemon(
+            interval_sec=args.interval_sec,
+            rules_path=Path(args.rules_path) if args.rules_path else None,
+            webhook_url=args.webhook_url,
+            webhook_secret=args.webhook_secret,
+            prometheus_host=args.prometheus_host,
+            prometheus_port=args.prometheus_port,
+            cwd=Path.cwd(),
+        )
+    except (RuntimeError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(json.dumps({"started": True, **state.to_dict()}, ensure_ascii=True, indent=2))
+    return 0
+
+
+def cmd_alert_daemon_stop(_: argparse.Namespace) -> int:
+    payload = stop_alert_daemon(cwd=Path.cwd())
+    print(json.dumps(payload, ensure_ascii=True, indent=2))
+    return 0 if payload.get("stopped") else 2
+
+
+def cmd_alert_daemon_status(_: argparse.Namespace) -> int:
+    payload = alert_daemon_status(cwd=Path.cwd())
+    print(json.dumps(payload, ensure_ascii=True, indent=2))
+    return 0 if payload.get("running") else 2
+
+
+def cmd_alert_daemon_run(args: argparse.Namespace) -> int:
+    state_path = Path(args.state_path) if args.state_path else None
+    return run_alert_loop(
+        interval_sec=args.interval_sec,
+        rules_path=Path(args.rules_path) if args.rules_path else None,
+        webhook_url=args.webhook_url,
+        webhook_secret=args.webhook_secret,
+        prometheus_host=args.prometheus_host,
+        prometheus_port=args.prometheus_port,
+        state_path=state_path,
+        cwd=Path.cwd(),
+    )
+
+
+def cmd_alert_history(args: argparse.Namespace) -> int:
+    store = AlertStore(dbk_root() / "alerts.sqlite")
+    store.init_schema()
+    state = None
+    if args.state:
+        state = AlertState(args.state)
+    alerts = store.query_alerts(
+        rule_name=args.rule_name,
+        instance=args.instance,
+        state=state,
+        since_hours=args.since_hours,
+        limit=args.limit,
+    )
+    payload = {
+        "alerts": [a.to_dict() for a in alerts],
+        "count": len(alerts),
+    }
+    print(json.dumps(payload, ensure_ascii=True, indent=2))
+    return 0
+
+
+def cmd_alert_prometheus(args: argparse.Namespace) -> int:
+    exporter = AlertPrometheusExporter(
+        listen_host=args.listen_host,
+        listen_port=args.listen_port,
+    )
+    store = AlertStore(dbk_root() / "alerts.sqlite")
+    store.init_schema()
+    firing = store.query_firing_alerts()
+    exporter.sync_alerts(firing)
+    counts = store.count_firing_by_severity()
+    exporter.sync_summary(
+        firing=len(firing),
+        warning=int(counts.get("warning", 0)),
+        critical=int(counts.get("critical", 0)),
+        info=int(counts.get("info", 0)),
+    )
+    if args.once:
+        print(exporter.metrics_text, end="")
+        return 0
+    print(f"Alert Prometheus exporter listening on {args.listen_host}:{args.listen_port}")
+    print("Press Ctrl+C to stop.")
+    exporter.start()
+    import time
+    try:
+        while True:
+            time.sleep(60)
+    except KeyboardInterrupt:
+        exporter.stop()
+    return 0
+
+
+def _collect_metrics_for_alerting(store: RuntimeStore, instance: str | None = None) -> list[dict[str, object]]:
+    """Collect recent metrics for alert evaluation."""
+    metrics: list[dict[str, object]] = []
+    with store.connect() as conn:
+        sql = "SELECT DISTINCT metric, instance FROM runtime_metric"
+        params: list[object] = []
+        if instance:
+            sql += " WHERE instance = ?"
+            params.append(instance)
+        rows = conn.execute(sql, tuple(params))
+        for row in rows:
+            metric = str(row["metric"])
+            inst = str(row["instance"])
+            latest = conn.execute(
+                """
+                SELECT ts, value, labels_json FROM runtime_metric
+                WHERE metric = ? AND instance = ?
+                ORDER BY ts DESC LIMIT 1
+                """,
+                (metric, inst),
+            )
+            for lr in latest:
+                metrics.append({
+                    "metric": metric,
+                    "value": float(lr["value"]),
+                    "instance": inst,
+                    "ts": str(lr["ts"]),
+                })
+    return metrics
+
+
+def cmd_api_server(args: argparse.Namespace) -> int:
+    """Start the DBK Agent REST API server."""
+    from dbk.api_server import run_server
+    try:
+        run_server(
+            host=args.host,
+            port=args.port,
+            workers=args.workers,
+            log_level=args.log_level,
+        )
+    except KeyboardInterrupt:
+        return 0
+    return 0
+
+
 def cmd_diagnose_latency(args: argparse.Namespace) -> int:
     store = _store()
     try:
@@ -597,6 +836,113 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional JSON file to override diagnosis thresholds",
     )
     p_latency.set_defaults(func=cmd_diagnose_latency)
+
+    p_agent = sub.add_parser("agent", help="AI Agent - LLM-powered observability assistant")
+    agent_sub = p_agent.add_subparsers(dest="agent_cmd", required=False)
+
+    p_agent_interactive = agent_sub.add_parser("interactive", help="Start interactive REPL")
+    p_agent_interactive.add_argument("--session")
+    p_agent_interactive.add_argument("--model")
+    p_agent_interactive.add_argument("--provider", choices=["openai", "anthropic", "mock"])
+    p_agent_interactive.add_argument("--no-stream", action="store_true")
+    p_agent_interactive.set_defaults(func=lambda a: _get_agent_main()(["--interactive", "--session", a.session or "", "--model", a.model or "", "--provider", a.provider or "", "--no-stream" if a.no_stream else ""]))
+
+    p_agent_info = agent_sub.add_parser("info", help="Show agent configuration")
+    p_agent_info.set_defaults(func=lambda a: _get_agent_main()(["--info"]))
+
+    p_agent_session_list = agent_sub.add_parser("sessions", help="List agent sessions")
+    p_agent_session_list.set_defaults(func=lambda a: _get_agent_main()(["session-list"]))
+
+    p_agent_workflow = agent_sub.add_parser("workflow", help="Manage workflow stage")
+    p_agent_workflow.add_argument("--session", required=True)
+    p_agent_workflow.add_argument("--stage", choices=[s.value for s in WorkflowStage])
+    p_agent_workflow.set_defaults(func=lambda a: _get_agent_main()(["workflow-advance", "--session", a.session, "--stage", a.stage or ""]))
+
+    # ------------------------------------------------------------------
+    # Alert subcommand.
+    # ------------------------------------------------------------------
+    p_alert = sub.add_parser("alert", help="Alerting: evaluate rules and notify")
+    alert_sub = p_alert.add_subparsers(dest="alert_cmd", required=True)
+
+    # --- alert rules ---
+    p_alert_rules = alert_sub.add_parser("rules", help="Manage alert rules")
+    alert_rules_sub = p_alert_rules.add_subparsers(dest="rules_cmd", required=True)
+
+    p_alert_rules_list = alert_rules_sub.add_parser("list", help="List alert rules")
+    p_alert_rules_list.add_argument("--rules-path")
+    p_alert_rules_list.add_argument("--format", default="json", choices=["json", "text"])
+    p_alert_rules_list.set_defaults(func=cmd_alert_rules_list)
+
+    p_alert_rules_validate = alert_rules_sub.add_parser("validate", help="Validate a rules file")
+    p_alert_rules_validate.add_argument("--rules-path", required=True)
+    p_alert_rules_validate.set_defaults(func=cmd_alert_rules_validate)
+
+    p_alert_rules_eval = alert_rules_sub.add_parser("eval", help="Evaluate rules against live metrics")
+    p_alert_rules_eval.add_argument("--rules-path", required=True)
+    p_alert_rules_eval.add_argument("--instance")
+    p_alert_rules_eval.add_argument("--webhook-url")
+    p_alert_rules_eval.add_argument("--webhook-secret")
+    p_alert_rules_eval.set_defaults(func=cmd_alert_rules_eval)
+
+    # --- alert daemon ---
+    p_alert_daemon = alert_sub.add_parser("daemon", help="Manage alert daemon")
+    alert_daemon_sub = p_alert_daemon.add_subparsers(dest="alert_daemon_cmd", required=True)
+
+    p_alert_daemon_start = alert_daemon_sub.add_parser("start", help="Start alert daemon")
+    p_alert_daemon_start.add_argument("--interval-sec", type=int, default=60)
+    p_alert_daemon_start.add_argument("--rules-path")
+    p_alert_daemon_start.add_argument("--webhook-url")
+    p_alert_daemon_start.add_argument("--webhook-secret")
+    p_alert_daemon_start.add_argument("--prometheus-host", default="127.0.0.1")
+    p_alert_daemon_start.add_argument("--prometheus-port", type=int, default=9090)
+    p_alert_daemon_start.set_defaults(func=cmd_alert_daemon_start)
+
+    p_alert_daemon_stop = alert_daemon_sub.add_parser("stop", help="Stop alert daemon")
+    p_alert_daemon_stop.set_defaults(func=cmd_alert_daemon_stop)
+
+    p_alert_daemon_status = alert_daemon_sub.add_parser("status", help="Show alert daemon status")
+    p_alert_daemon_status.set_defaults(func=cmd_alert_daemon_status)
+
+    p_alert_daemon_run = alert_daemon_sub.add_parser("run", help=argparse.SUPPRESS)
+    p_alert_daemon_run.add_argument("--interval-sec", type=int, default=60)
+    p_alert_daemon_run.add_argument("--rules-path")
+    p_alert_daemon_run.add_argument("--webhook-url")
+    p_alert_daemon_run.add_argument("--webhook-secret")
+    p_alert_daemon_run.add_argument("--prometheus-host", default="127.0.0.1")
+    p_alert_daemon_run.add_argument("--prometheus-port", type=int, default=9090)
+    p_alert_daemon_run.add_argument("--state-path", help=argparse.SUPPRESS)
+    p_alert_daemon_run.set_defaults(func=cmd_alert_daemon_run)
+
+    # --- alert history ---
+    p_alert_history = alert_sub.add_parser("history", help="Query alert history")
+    p_alert_history.add_argument("--rule-name")
+    p_alert_history.add_argument("--instance")
+    p_alert_history.add_argument("--state", choices=["firing", "resolved"])
+    p_alert_history.add_argument("--since-hours", type=float)
+    p_alert_history.add_argument("--limit", type=int, default=50)
+    p_alert_history.set_defaults(func=cmd_alert_history)
+
+    # --- alert prometheus ---
+    p_alert_prom = alert_sub.add_parser("prometheus", help="Start Prometheus exporter and query metrics")
+    p_alert_prom.add_argument("--listen-host", default="127.0.0.1")
+    p_alert_prom.add_argument("--listen-port", type=int, default=9090)
+    p_alert_prom.add_argument("--once", action="store_true", help="Print current metrics and exit")
+    p_alert_prom.set_defaults(func=cmd_alert_prometheus)
+
+    # ------------------------------------------------------------------
+    # api-server subcommand.
+    # ------------------------------------------------------------------
+    p_api_server = sub.add_parser("api-server", help="Start the DBK Agent REST API server")
+    p_api_server.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
+    p_api_server.add_argument("--port", type=int, default=8080, help="Bind port (default: 8080)")
+    p_api_server.add_argument("--workers", type=int, default=1, help="Number of worker processes (default: 1)")
+    p_api_server.add_argument(
+        "--log-level",
+        default="info",
+        choices=["debug", "info", "warning", "error"],
+        help="Uvicorn log level (default: info)",
+    )
+    p_api_server.set_defaults(func=cmd_api_server)
 
     return parser
 

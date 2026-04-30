@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DBK Agent</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <!-- Header -->
+  <header class="header">
+    <div class="header-left">
+      <span class="logo">DBK</span>
+      <span class="logo-sub">Agent</span>
+    </div>
+    <div class="header-center">
+      <div class="status-badges">
+        <span class="badge badge-provider" id="badge-provider">mock</span>
+        <span class="badge badge-model" id="badge-model">-</span>
+        <span class="badge badge-tools" id="badge-tools">-</span>
+        <span class="badge badge-session" id="badge-session">no session</span>
+      </div>
+    </div>
+    <div class="header-right">
+      <button class="btn btn-sm" onclick="clearSession()">Clear</button>
+      <button class="btn btn-sm" onclick="showMemoryPanel()">Memory</button>
+      <button class="btn btn-sm" onclick="showHistoryPanel()">History</button>
+      <button class="btn btn-sm" onclick="showInfoModal()">Info</button>
+    </div>
+  </header>
+
+  <!-- Main layout -->
+  <div class="layout">
+
+    <!-- Left: Session & workflow panel -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-section">
+        <div class="sidebar-title">Sessions</div>
+        <div class="session-list" id="session-list">
+          <div class="empty-hint">No sessions</div>
+        </div>
+        <button class="btn btn-block btn-sm" onclick="createSession()">+ New Session</button>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-title">Workflow Stage</div>
+        <div class="workflow-display" id="workflow-display">
+          <div class="workflow-stage empty-hint">-</div>
+        </div>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-title">Quick Actions</div>
+        <div class="quick-actions">
+          <button class="btn btn-qa" onclick="quickCollect()">Collect Metrics</button>
+          <button class="btn btn-qa" onclick="quickDiagnose()">Diagnose Latency</button>
+          <button class="btn btn-qa" onclick="quickHealth()">Health Check</button>
+          <button class="btn btn-qa" onclick="quickDaemonStatus()">Daemon Status</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Center: Chat area -->
+    <main class="chat-area" id="chat-area">
+      <!-- Messages rendered here -->
+    </main>
+
+    <!-- Right: Tools / context panel -->
+    <aside class="tools-panel" id="tools-panel">
+      <div class="sidebar-title">Available Tools</div>
+      <div class="tools-list" id="tools-list">
+        <div class="empty-hint">Loading...</div>
+      </div>
+      <div class="sidebar-title" style="margin-top:1rem;">Context</div>
+      <div class="context-info" id="context-info">
+        <div class="empty-hint">-</div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Input bar -->
+  <footer class="input-bar" id="input-bar">
+    <div class="input-wrapper">
+      <textarea
+        id="msg-input"
+        class="msg-input"
+        placeholder="Ask DBK Agent... (Shift+Enter for newline, Enter to send)"
+        rows="1"
+        autofocus
+      ></textarea>
+      <div class="input-actions">
+        <label class="stream-toggle" title="Toggle streaming">
+          <input type="checkbox" id="stream-toggle" checked>
+          <span>Stream</span>
+        </label>
+        <button class="btn btn-primary" id="send-btn" onclick="sendMessage()">Send</button>
+      </div>
+    </div>
+    <div class="typing-indicator" id="typing-indicator" style="display:none;">
+      <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+      Thinking...
+    </div>
+    <div class="error-bar" id="error-bar" style="display:none;"></div>
+  </footer>
+
+  <!-- Modals -->
+  <div class="modal-overlay" id="modal-overlay" style="display:none;" onclick="closeModal(event)">
+    <div class="modal" id="modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <span class="modal-title" id="modal-title"></span>
+        <button class="modal-close" onclick="closeModal()">&times;</button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
