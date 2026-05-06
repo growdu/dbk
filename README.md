@@ -1,6 +1,6 @@
 # DBK Agent
 
-Database Kernel observability AI Agent — CLI + REST API + Web UI.
+Database Kernel observability AI Agent — CLI + REST API + Python SDK + Web UI.
 
 ## Overview
 
@@ -14,6 +14,12 @@ It provides:
 - **Plugin system** — Extensible tools, system prompts, API routes, and lifecycle hooks
 
 ## Quick Start
+
+### Install
+
+```bash
+pip install dbk
+```
 
 ### CLI
 
@@ -49,7 +55,6 @@ python3 -m dbk runtime cleanup-report --limit 50 --window-hours 24
 ### Agent REPL (LLM-powered)
 
 ```bash
-# Interactive chat with the agent
 python3 -m dbk agent --interactive
 
 # Show agent info
@@ -57,6 +62,13 @@ python3 -m dbk agent info
 
 # List sessions
 python3 -m dbk agent sessions
+
+# Workflow orchestration
+python3 -m dbk agent workflow stages          # list all stages
+python3 -m dbk agent workflow stages --verbose # with tool routing
+python3 -m dbk agent workflow status --session SID
+python3 -m dbk agent workflow run-stage --stage implement --goal "Add index on orders.user_id"
+python3 -m dbk agent workflow run-full --goal "Diagnose the latency spike on pg-main"
 ```
 
 The REPL supports commands: `help`, `info`, `workflow`, `session`, `memory`, `clear`, `exit`.
@@ -105,6 +117,37 @@ curl -X POST http://127.0.0.1:8080/sessions \
 curl -X POST "http://127.0.0.1:8080/chat?session_id=$SID" \
   -H 'Content-Type: application/json' \
   -d '{"message":"Diagnose latency for pg-main-01"}'
+```
+
+### Python SDK
+
+```python
+from dbk import DBK, DBKClient
+
+# High-level one-liner
+dbk = DBK()
+dbk.collect()
+
+# From a PostgreSQL DSN
+client = DBKClient.from_dsn("postgresql://user:***@localhost:5432/mydb")
+
+# Collect and query metrics
+client.collect_metrics(instance="pg-main-01", source="mock")
+rows = client.query_metrics(metric="cpu_percent", limit=20)
+
+# Diagnose an incident
+result = client.diagnose_incident(instance="pg-main-01", task_id="inc-001", auto_trace=False)
+
+# Chat with the agent
+reply = client.chat("Show me CPU metrics for the last hour")
+for token in client.stream_chat("Analyze the recent incident"):
+    print(token, end="", flush=True)
+
+# Run an eBPF trace (dry-run by default)
+trace = client.run_trace(profile="cpu-hotpath", task_id="t-42", duration_sec=5, execute=False)
+
+# Cleanup old data
+summary = client.cleanup_data(older_than_hours=168.0, dry_run=True)
 ```
 
 ### Web UI
@@ -179,6 +222,10 @@ Run the complete demo covering all features:
 | `DBK_PG_DSN` | PostgreSQL connection string for `pgstat` source |
 | `DBK_ROOT` | Override `.dbk/` directory location |
 | `DBK_PLUGIN_DIR` | Additional plugin search directory |
+
+## Contributing
+
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, testing, code style, and type checking guidelines.
 
 ## Testing
 

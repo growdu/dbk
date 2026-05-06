@@ -150,7 +150,7 @@ class AlertPrometheusExporter:
         exporter_ref: "AlertPrometheusExporter" = self  # noqa: F841
 
         class _Handler(BaseHTTPRequestHandler):
-            _exporter: "AlertPrometheusExporter" | None = None  # type: ignore[annotation-unchecked]
+            _exporter: "AlertPrometheusExporter" | None = None
 
             def do_GET(self) -> None:
                 if self.path not in ("/", "/metrics"):

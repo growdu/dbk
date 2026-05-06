@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from .collector_daemon import is_pid_running
 from .config import (
@@ -187,7 +187,7 @@ def read_state(path: Path | None = None) -> dict[str, object] | None:
     state_path = path or runtime_cleanup_daemon_state_path()
     if not state_path.exists():
         return None
-    return json.loads(state_path.read_text(encoding="utf-8"))
+    return cast(dict[str, object], json.loads(state_path.read_text(encoding="utf-8")))
 
 
 def start_cleanup_daemon(
@@ -210,7 +210,7 @@ def start_cleanup_daemon(
     state_path = runtime_cleanup_daemon_state_path(cwd)
     log_path = runtime_cleanup_daemon_log_path(cwd)
     existing = read_state(state_path)
-    if existing and is_pid_running(int(existing["pid"])):
+    if existing and is_pid_running(int(existing["pid"]) if isinstance(existing["pid"], (int, float, str)) else 0):
         raise RuntimeError(f"runtime cleanup daemon already running with pid={existing['pid']}")
 
     cmd = [
@@ -280,7 +280,7 @@ def stop_cleanup_daemon(
     if state is None:
         return {"stopped": False, "reason": "not_running"}
 
-    pid = int(state["pid"])
+    pid = int(state["pid"]) if isinstance(state["pid"], (int, float, str)) else 0
     if not is_pid_running(pid):
         state_path.unlink(missing_ok=True)
         return {"stopped": True, "pid": pid, "signal": "none"}
@@ -329,7 +329,7 @@ def cleanup_daemon_status(*, cwd: Path | None = None) -> dict[str, object]:
     if state is None:
         return {"running": False}
     payload = dict(state)
-    payload["running"] = is_pid_running(int(state["pid"]))
+    payload["running"] = is_pid_running(int(state["pid"]) if isinstance(state["pid"], (int, float, str)) else 0)
     payload["state_path"] = str(state_path)
     return payload
 
@@ -351,19 +351,26 @@ def run_cleanup_loop(
     target_history_path = history_path or runtime_cleanup_history_path()
     target_state = read_state(target_state_path) or {}
 
+    _interval_sec_val = target_state.get("interval_sec")
+    _interval_sec = int(_interval_sec_val) if isinstance(_interval_sec_val, (int, float, str)) else interval_sec
+    _older_than_hours_val = target_state.get("older_than_hours")
+    _older_than_hours = float(_older_than_hours_val) if isinstance(_older_than_hours_val, (int, float, str)) else older_than_hours
+    _total_runs_val = target_state.get("total_runs")
+    _total_runs = int(_total_runs_val) if isinstance(_total_runs_val, (int, float, str)) else 0
+
     state = RuntimeCleanupDaemonState(
         pid=os.getpid(),
-        interval_sec=int(target_state.get("interval_sec", interval_sec)),
-        older_than_hours=float(target_state.get("older_than_hours", older_than_hours)),
+        interval_sec=_interval_sec,
+        older_than_hours=_older_than_hours,
         instance=target_state.get("instance"),  # type: ignore[arg-type]
         skip_trace_db=bool(target_state.get("skip_trace_db", skip_trace_db)),
         skip_artifacts=bool(target_state.get("skip_artifacts", skip_artifacts)),
         vacuum=bool(target_state.get("vacuum", vacuum)),
-        max_delete_per_run=int(target_state["max_delete_per_run"])  # type: ignore[arg-type]
-        if target_state.get("max_delete_per_run") is not None
+        max_delete_per_run=int(target_state["max_delete_per_run"])
+        if target_state.get("max_delete_per_run") is not None and isinstance(target_state["max_delete_per_run"], (int, float, str))
         else max_delete_per_run,
-        safety_floor_hours=float(target_state["safety_floor_hours"])  # type: ignore[arg-type]
-        if target_state.get("safety_floor_hours") is not None
+        safety_floor_hours=float(target_state["safety_floor_hours"])
+        if target_state.get("safety_floor_hours") is not None and isinstance(target_state["safety_floor_hours"], (int, float, str))
         else safety_floor_hours,
         started_at=str(target_state.get("started_at", utc_now_iso())),
         log_path=str(target_state.get("log_path", runtime_cleanup_daemon_log_path())),
@@ -371,7 +378,7 @@ def run_cleanup_loop(
         last_success_at=target_state.get("last_success_at"),  # type: ignore[arg-type]
         last_error=target_state.get("last_error"),  # type: ignore[arg-type]
         last_summary=target_state.get("last_summary"),  # type: ignore[arg-type]
-        total_runs=int(target_state.get("total_runs", 0)),
+        total_runs=_total_runs,
     )
 
     stop_flag = {"stop": False}

@@ -5,6 +5,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any, Callable, cast
 
 from .collector_daemon import (
     daemon_status,
@@ -17,6 +18,7 @@ from .collector_daemon import (
 from .collectors import collect_mock_runtime_metrics
 from .config import artifacts_root, runtime_db_path, validate_config
 from .diagnose import diagnose_latency_incident
+from .models import RuntimeEvent
 from .pg_collectors import PgCollectorError, collect_pg_health, collect_pg_runtime_metrics
 from .runtime_cleanup import cleanup_runtime_data
 from .runtime_cleanup_daemon import (
@@ -27,8 +29,13 @@ from .runtime_cleanup_daemon import (
     stop_cleanup_daemon,
 )
 from .agent.state import WorkflowStage
+from .agent.core import Agent
+from .agent.workflow import WorkflowOrchestrator
+from .providers import get_provider
 from .alerting import (
     AlertEngine,
+    AlertEvent,
+    AlertNotifier,
     AlertPrometheusExporter,
     AlertStore,
     AlertRule,
@@ -46,13 +53,13 @@ from .alerting.models import AlertState, Severity, DEFAULT_ALERT_RULES
 from .config import dbk_root
 from .storage import RuntimeStore
 from .thresholds import load_thresholds
-from .tracing import run_trace_profile, supported_profiles
+from .tracing import run_trace_profile, supported_profiles, PROFILE_COMMANDS
 
 # Agent CLI lazy import (avoids loading LLM packages until needed).
-_agent_cli_main: callable | None = None
+_agent_cli_main: Callable[..., Any] | None = None
 
 
-def _get_agent_main() -> callable:
+def _get_agent_main() -> Callable[..., Any]:
     global _agent_cli_main
     if _agent_cli_main is None:
         from . import cli_agent
@@ -83,7 +90,7 @@ def _collect_events(
     source: str,
     instance: str,
     dsn: str | None,
-) -> tuple[list[object], list[str]]:
+) -> tuple[list[RuntimeEvent], list[str]]:
     if source == "mock":
         return collect_mock_runtime_metrics(instance=instance), []
     if source == "pgstat":
@@ -95,12 +102,45 @@ def _collect_events(
     raise PgCollectorError("Unsupported --source value.")
 
 
-def cmd_init(_: argparse.Namespace) -> int:
+def cmd_init(args: argparse.Namespace) -> int:
+    """Initialize DBK: runtime DB, artifact folders, and optionally a config file."""
     store = _store()
     store.init_schema()
     artifacts_root().mkdir(parents=True, exist_ok=True)
     print(f"Initialized DBK runtime DB: {runtime_db_path()}")
     print(f"Initialized artifacts dir: {artifacts_root()}")
+
+    # Handle config initialization.
+    from dbk.config_loader import DEFAULT_CONFIG_PATH
+    config_target = DEFAULT_CONFIG_PATH
+    config_local = Path.cwd() / "config.toml"
+    # Prefer local project config if it exists, otherwise use XDG path.
+    if config_local.exists():
+        config_target = config_local
+    else:
+        config_target = DEFAULT_CONFIG_PATH
+
+    if config_target.exists() and not args.force:
+        print(f"\nConfig file already exists at {config_target}.")
+        print("Use --force to overwrite it.")
+        return 0
+
+    src = Path(__file__).parent / "config.default.toml"
+    if not src.exists():
+        print(f"\nWarning: default config template not found at {src}", file=sys.stderr)
+    else:
+        import shutil
+        config_target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, config_target)
+        print(f"Initialized config file: {config_target}")
+
+    print()
+    print("Next steps:")
+    print("  1. Edit the config file to set your API keys (e.g. openai_api_key, anthropic_api_key)")
+    print("  2. Run 'dbk config show' to verify your configuration")
+    print("  3. Run 'dbk validate' to check your environment")
+    print("  4. Run 'dbk collect daemon start' to start the collector daemon")
+    print("  5. Run 'dbk agent interactive' to start the AI agent REPL")
     return 0
 
 
@@ -108,6 +148,141 @@ def cmd_validate(_: argparse.Namespace) -> int:
     result = validate_config()
     print(json.dumps(result.as_dict(), ensure_ascii=True, indent=2))
     return 0 if result.ok else 2
+
+
+def cmd_config_show(_: argparse.Namespace) -> int:
+    """Print the resolved TOML config."""
+    from dbk.config import load_config
+    from dbk.config_loader import DEFAULT_CONFIG_PATH
+    cfg = load_config()
+    print(f"# DBK Config (resolved)")
+    print(f"# Active config path: {DEFAULT_CONFIG_PATH}")
+    print(f"# Project config path: {Path.cwd() / 'config.toml'}")
+    print()
+    print(json.dumps(cfg, ensure_ascii=True, indent=2))
+    return 0
+
+
+def cmd_config_init(args: argparse.Namespace) -> int:
+    """Initialize a config file at the XDG default path."""
+    from dbk.config_loader import DEFAULT_CONFIG_PATH
+    target = Path(args.path) if args.path else DEFAULT_CONFIG_PATH
+    if target.exists() and not args.force:
+        print(f"Config already exists at {target}. Use --force to overwrite.", file=sys.stderr)
+        return 2
+    # Copy from bundled default
+    import shutil
+    src = Path(__file__).parent / "config.default.toml"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, target)
+    print(f"Initialized config at {target}")
+    print(f"Edit this file to customize your DBK settings.")
+    return 0
+
+
+def cmd_config_get(args: argparse.Namespace) -> int:
+    """Print the resolved value of a config key (supports dot notation)."""
+    from dbk.config import load_config
+    cfg = load_config()
+    val = cfg.get(*args.key.split("."))
+    print(val if val is not None else "")
+    return 0
+
+
+def cmd_config_set(args: argparse.Namespace) -> int:
+    """Set a config key in the user config file (creates it if needed).
+
+    Supports dot-notation for nested keys, e.g. dbk config set agent.provider anthropic.
+    """
+    from dbk.config_loader import DEFAULT_CONFIG_PATH, TOMLConfig, TOMLError
+    import tomllib
+    cfg_path = Path(args.path) if args.path else DEFAULT_CONFIG_PATH
+
+    # Load existing config or start from defaults.
+    if cfg_path.exists():
+        try:
+            raw = cfg_path.read_text(encoding="utf-8")
+            data: dict = tomllib.loads(raw)
+        except Exception as exc:
+            print(f"Failed to read existing config: {exc}", file=sys.stderr)
+            return 2
+    else:
+        data = {}
+
+    # Navigate/create the nested path.
+    keys = args.key.split(".")
+    current: dict = data
+    for k in keys[:-1]:
+        if k not in current:
+            current[k] = {}
+        if not isinstance(current[k], dict):
+            print(f"Cannot set {args.key}: {'.'.join(keys[:keys.index(k)+1])} is not a table.", file=sys.stderr)
+            return 2
+        current = current[k]
+
+    # Parse the value.
+    final_key = keys[-1]
+    if args.value is None:
+        # Delete the key
+        if final_key in current:
+            del current[final_key]
+            print(f"Deleted: {args.key}")
+        else:
+            print(f"Key not found: {args.key}", file=sys.stderr)
+            return 1
+    else:
+        # Type-detect: try bool, int, float, then string.
+        v = args.value
+        for conv, check in [
+            (lambda s: s.lower() in ("true", "false"), lambda s: s.lower() == "true"),
+            (str.isdigit, int),
+            (lambda s: "." in s and s.replace(".", "", 1).isdigit(), float),
+        ]:
+            try:
+                if check(v):
+                    v = conv(v)
+                    break
+            except ValueError:
+                pass
+        current[final_key] = v
+        print(f"Set: {args.key} = {v!r}")
+
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _toml_str(val: object) -> str:
+        """Serialize a nested dict to TOML with [section] headers.
+
+        Handles dot-notation in keys as TOML section paths. Our config
+        has only top-level table sections (no inline tables or arrays of
+        tables), so this simple serializer is sufficient.
+        """
+        lines: list[str] = []
+
+        def write_dict(d: dict, prefix: str = "") -> None:
+            for k, v in sorted(d.items(), key=lambda x: x[0]):
+                if isinstance(v, dict):
+                    section = f"{prefix}.{k}" if prefix else k
+                    lines.append(f"[{section}]")
+                    write_dict(v, section)
+                elif v is None:
+                    pass
+                elif isinstance(v, bool):
+                    lines.append(f"{k} = {str(v).lower()}")
+                elif isinstance(v, int):
+                    lines.append(f"{k} = {v}")
+                elif isinstance(v, float):
+                    lines.append(f"{k} = {v}")
+                else:
+                    escaped = str(v).replace("\\", "\\\\").replace('"', '\\"')
+                    lines.append(f'{k} = "{escaped}"')
+
+        write_dict(cast(dict, val))
+        return "\n".join(lines)
+
+    text = _toml_str(data)
+    cfg_path.write_text(text, encoding="utf-8")
+    print(f"Wrote: {cfg_path}")
+    return 0
 
 
 def cmd_collect(args: argparse.Namespace) -> int:
@@ -204,17 +379,16 @@ def cmd_collect_daemon_status(args: argparse.Namespace) -> int:
 
 
 def cmd_collect_daemon_list(args: argparse.Namespace) -> int:
-    payload = {
-        "daemons": list_daemons(
-            cwd=Path.cwd(),
-            include_stale=True,
-            tag=args.tag,
-            source=args.source,
-            instance_pattern=args.instance_pattern,
-            min_priority=args.min_priority,
-        )
-    }
-    payload["running"] = any(bool(item.get("running")) for item in payload["daemons"])
+    daemons = list_daemons(
+        cwd=Path.cwd(),
+        include_stale=True,
+        tag=args.tag,
+        source=args.source,
+        instance_pattern=args.instance_pattern,
+        min_priority=args.min_priority,
+    )
+    payload: dict[str, Any] = {"daemons": daemons}
+    payload["running"] = any(bool(item.get("running")) for item in daemons)
     print(json.dumps(payload, ensure_ascii=True, indent=2))
     return 0 if payload["running"] else 2
 
@@ -401,7 +575,38 @@ def cmd_trace_run(args: argparse.Namespace) -> int:
     except (ValueError, PermissionError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
+
     store.insert_trace_artifact(result.artifact)
+
+    # Audit trail for every privileged escalation attempt.
+    if args.execute:
+        summary = result.artifact.summary_json
+        try:
+            import pwd as _pwd
+            username = _pwd.getpwuid(os.getuid()).pw_name
+        except Exception:
+            username = os.environ.get("USER", "unknown")
+        try:
+            store.insert_trace_audit(
+                task_id=args.task_id,
+                username=username,
+                action_id="org.dbk.bpftrace.run",
+                command=PROFILE_COMMANDS.get(args.profile, []),
+                duration_sec=args.duration,
+                profile=args.profile,
+                mode=summary.get("mode", "simulated"),
+                escalation=summary.get("escalation", "none"),
+                exit_code=None,
+                approved_by_cli=args.approve_privileged,
+                error=None,
+            )
+        except Exception as exc:
+            # Never let audit failure break the trace command.
+            print(
+                f"[audit warning] failed to write audit record: {exc}",
+                file=sys.stderr,
+            )
+
     print(f"Trace profile complete: {args.profile}")
     print(f"stdout: {result.stdout_path}")
     print(f"summary: {result.summary_path}")
@@ -540,6 +745,11 @@ def cmd_alert_daemon_status(_: argparse.Namespace) -> int:
 
 
 def cmd_alert_daemon_run(args: argparse.Namespace) -> int:
+    # Build agent if --enable-agent is set.
+    agent: Agent | None = None
+    if args.enable_agent:
+        from dbk.providers import get_provider
+        agent = Agent(provider=get_provider())
     state_path = Path(args.state_path) if args.state_path else None
     return run_alert_loop(
         interval_sec=args.interval_sec,
@@ -550,6 +760,7 @@ def cmd_alert_daemon_run(args: argparse.Namespace) -> int:
         prometheus_port=args.prometheus_port,
         state_path=state_path,
         cwd=Path.cwd(),
+        agent=agent,
     )
 
 
@@ -651,6 +862,58 @@ def cmd_api_server(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_run(args: argparse.Namespace) -> int:
+    """Run agent with a natural-language goal, auto-mapping to workflow stage."""
+    provider = get_provider()
+    agent = Agent(provider=provider)
+
+    # Determine target stage from --stage flag or infer from intent.
+    target_stage: WorkflowStage | None = None
+    if args.stage:
+        target_stage = WorkflowStage(args.stage)
+    else:
+        # Infer stage from goal keywords.
+        goal_lower = args.goal.lower()
+        if any(kw in goal_lower for kw in ["monitor", "health", "check", "status", "metrics"]):
+            target_stage = WorkflowStage.REQUIREMENTS
+        elif any(kw in goal_lower for kw in ["design", "plan", "architecture", "approach"]):
+            target_stage = WorkflowStage.DESIGN
+        elif any(kw in goal_lower for kw in ["implement", "build", "create", "set up", "configure"]):
+            target_stage = WorkflowStage.IMPLEMENT
+        elif any(kw in goal_lower for kw in ["test", "validate", "verify", "check"]):
+            target_stage = WorkflowStage.TEST
+        elif any(kw in goal_lower for kw in ["deploy", "runtime", "start", "run"]):
+            target_stage = WorkflowStage.RUNTIME
+        elif any(kw in goal_lower for kw in ["document", "doc", "runbook", "readme"]):
+            target_stage = WorkflowStage.DOC
+        elif any(kw in goal_lower for kw in ["ops", "operational", "handover", "cleanup"]):
+            target_stage = WorkflowStage.OPS
+        else:
+            target_stage = WorkflowStage.REQUIREMENTS  # Default
+
+    session_id = args.session
+    if args.resume and session_id:
+        state = agent.get_session(session_id)
+        if state:
+            session_id = state.session_id
+        else:
+            print(f"Session not found: {session_id}", file=sys.stderr)
+            return 2
+
+    orchestrator = WorkflowOrchestrator(agent=agent, auto_transition_on_completion=not args.no_auto_transition)
+
+    if args.full:
+        # Run full workflow.
+        result = orchestrator.run_full_workflow(goal=args.goal, session_id=session_id)
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0
+    else:
+        # Run single stage.
+        result = orchestrator.run_stage(message=args.goal, target_stage=target_stage, session_id=session_id)
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0
+
+
 def cmd_diagnose_latency(args: argparse.Namespace) -> int:
     store = _store()
     try:
@@ -681,11 +944,58 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="dbk", description="Database Kernel Agent CLI (MVP)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_init = sub.add_parser("init", help="Initialize runtime DB and artifact folders")
+    p_init = sub.add_parser("init", help="Initialize runtime DB, artifacts, and optionally a config file")
+    p_init.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing config file if one is found",
+    )
     p_init.set_defaults(func=cmd_init)
+
+    p_run = sub.add_parser("run", help="Run agent with a natural-language goal (auto-maps to workflow stage)")
+    p_run.add_argument("goal", help="Natural-language goal or task description")
+    p_run.add_argument("--session", help="Session ID to resume")
+    p_run.add_argument("--resume", action="store_true", help="Resume existing session")
+    p_run.add_argument(
+        "--stage",
+        choices=[s.value for s in WorkflowStage],
+        help="Force a specific workflow stage (auto-inferred from goal if omitted)",
+    )
+    p_run.add_argument(
+        "--full",
+        action="store_true",
+        help="Run the full workflow from REQUIREMENTS to DONE",
+    )
+    p_run.add_argument(
+        "--no-auto-transition",
+        action="store_true",
+        help="Disable auto-advance between stages",
+    )
+    p_run.set_defaults(func=cmd_run)
 
     p_validate = sub.add_parser("validate", help="Validate DBK configuration and environment")
     p_validate.set_defaults(func=cmd_validate)
+
+    p_config = sub.add_parser("config", help="Config management")
+    config_sub = p_config.add_subparsers(dest="config_cmd", required=True)
+
+    p_config_show = config_sub.add_parser("show", help="Print resolved TOML configuration")
+    p_config_show.set_defaults(func=cmd_config_show)
+
+    p_config_init = config_sub.add_parser("init", help="Create a config file from the default template")
+    p_config_init.add_argument("--path", help="Target path (default: ~/.config/dbk/config.toml)")
+    p_config_init.add_argument("--force", action="store_true", help="Overwrite existing config")
+    p_config_init.set_defaults(func=cmd_config_init)
+
+    p_config_get = config_sub.add_parser("get", help="Print the resolved value of a config key")
+    p_config_get.add_argument("key", help="Config key (dot-notation, e.g. agent.provider)")
+    p_config_get.set_defaults(func=cmd_config_get)
+
+    p_config_set = config_sub.add_parser("set", help="Set a config key in the user config file")
+    p_config_set.add_argument("key", help="Config key (dot-notation, e.g. agent.provider)")
+    p_config_set.add_argument("value", nargs="?", default=None, help="Value to set (omit to delete the key)")
+    p_config_set.add_argument("--path", help="Target config path (default: ~/.config/dbk/config.toml)")
+    p_config_set.set_defaults(func=cmd_config_set)
 
     p_collect = sub.add_parser("collect", help="Collect runtime metrics")
     p_collect.add_argument("--instance", default="pg-main-01")
@@ -881,17 +1191,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_agent_interactive.set_defaults(func=lambda a: _get_agent_main()(["--interactive", "--session", a.session or "", "--model", a.model or "", "--provider", a.provider or "", "--no-stream" if a.no_stream else ""]))
 
     p_agent_info = agent_sub.add_parser("info", help="Show agent configuration")
-    p_agent_info.set_defaults(func=lambda a: _get_agent_main()(["--info"]))
+    p_agent_info.set_defaults(func=lambda _a: _get_agent_main()(["--info"]))
 
     def _do_sessions(args: argparse.Namespace) -> int:
         subcmd = "session-clear" if args.clear else "session-list"
-        extra = []
+        extra: list[str] = []
         if args.clear:
             if args.session:
                 extra += ["--session", args.session]
             if args.all:
                 extra += ["--all"]
-        return _get_agent_main()([subcmd] + extra)
+        return cast(int, _get_agent_main()([subcmd] + extra))
 
     p_agent_session_list = agent_sub.add_parser("sessions", help="List/clear agent sessions")
     p_agent_session_list.add_argument("--clear", action="store_true", help="Clear sessions")
@@ -900,7 +1210,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_agent_session_list.set_defaults(func=_do_sessions)
 
     p_agent_tools = agent_sub.add_parser("tools", help="Show registered agent tools")
-    p_agent_tools.set_defaults(func=lambda a: _get_agent_main()(["tools-list"]))
+    p_agent_tools.set_defaults(func=lambda _a: _get_agent_main()(["tools-list"]))
 
     p_agent_workflow = agent_sub.add_parser("workflow", help="Manage workflow stage")
     p_agent_workflow.add_argument("--session", required=True)
@@ -977,6 +1287,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_alert_daemon_run.add_argument("--prometheus-host", default="127.0.0.1")
     p_alert_daemon_run.add_argument("--prometheus-port", type=int, default=9090)
     p_alert_daemon_run.add_argument("--state-path", help=argparse.SUPPRESS)
+    p_alert_daemon_run.add_argument(
+        "--enable-agent",
+        action="store_true",
+        help="Enable AI Agent diagnostic sessions when alerts fire (AIOps闭环)",
+    )
     p_alert_daemon_run.set_defaults(func=cmd_alert_daemon_run)
 
     # --- alert history ---
@@ -1010,13 +1325,41 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_api_server.set_defaults(func=cmd_api_server)
 
+    # ------------------------------------------------------------------
+    # tui subcommand (Textual TUI for the agent).
+    # ------------------------------------------------------------------
+    p_tui = sub.add_parser("tui", help="Start the DBK Agent Textual TUI")
+    p_tui.add_argument("--session", dest="session_id", metavar="ID",
+                       help="Resume an existing session by ID")
+    p_tui.add_argument("--provider", choices=["openai", "anthropic", "mock"],
+                       default="mock", help="LLM provider (default: mock)")
+    p_tui.add_argument("--model", dest="model", metavar="NAME",
+                       help="Model name (provider-specific)")
+    p_tui.add_argument("--no-stream", action="store_true",
+                       help="Disable streaming token display")
+    p_tui.set_defaults(func=lambda a: _run_tui(a))
+
     return parser
+
+
+def _run_tui(args: argparse.Namespace) -> int:
+    from dbk.cli_tui import main as tui_main
+    argv = []
+    if getattr(args, "session_id", None):
+        argv += ["--session", args.session_id]
+    if getattr(args, "provider", "mock") != "mock":
+        argv += ["--provider", args.provider]
+    if getattr(args, "model", None):
+        argv += ["--model", args.model]
+    if getattr(args, "no_stream", False):
+        argv += ["--no-stream"]
+    return tui_main(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    return args.func(args)
+    return cast(int, args.func(args))
 
 
 if __name__ == "__main__":

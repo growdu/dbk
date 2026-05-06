@@ -442,6 +442,114 @@ Prune old episodic entries, retaining the most recent N turns.
 { "deleted": 15, "session_id": "..." }
 ```
 
+## SDK Reference
+
+The DBK SDK (`from dbk import DBKClient`) provides a programmatic Python API for
+embedding the DBK agent in external applications without going through the CLI.
+
+### `DBKClient(config=None, auto_connect=True)`
+
+Create a DBK client. `config` is an `SDKConfig` instance or `None` (reads
+`~/.dbk/dbkaictl.toml` and environment variables).
+
+```python
+from dbk import DBKClient
+
+client = DBKClient()  # uses default config
+```
+
+### `client.chat(message, session_id=None)`
+
+Send a message to the agent and get a response.
+
+```python
+result = client.chat("Diagnose the latency spike on pg-main", session_id=None)
+print(result["content"])
+```
+
+**Returns:** `dict` with keys: `content`, `session_id`, `intent`, `tool_calls`, `tool_results`, `workflow_stage`.
+
+### `client.create_session(goal=None, session_id=None)`
+
+Create a new session.
+
+```python
+state = client.create_session(goal="Investigate lock contention")
+print(state.session_id)
+```
+
+**Returns:** `AgentState`.
+
+### `client.health_check(source=None, dsn=None)`
+
+Check PostgreSQL health and system status.
+
+```python
+health = client.health_check(source="postgres", dsn="postgresql://user:pass@host:5432/db")
+print(health["status"])
+```
+
+**Returns:** `dict` with keys: `status`, `postgres_healthy`, `metrics_collected`, `alerts_firing`, `daemons_running`, `uptime_seconds`.
+
+### `client.get_session(session_id)`
+
+Retrieve a session by ID.
+
+```python
+state = client.get_session("550e8400-e29b-41d4-a716-446655440000")
+print(state.workflow_stage)
+```
+
+**Returns:** `AgentState | None`.
+
+### `client.get_workflow_status(session_id)`
+
+Return workflow progress for a session.
+
+```python
+status = client.get_workflow_status("550e8400-e29b-41d4-a716-446655440000")
+print(status["progress"]["percent"])
+```
+
+**Returns:** `dict` with keys: `session_id`, `current_stage`, `description`, `progress`.
+
+### `client.start_daemons()`
+
+Start all configured collector daemons (metrics, trace, cleanup).
+
+### `client.stop_daemons()`
+
+Stop all running collector daemons.
+
+### `client.diagnose_incident(incident_type, instance="default")`
+
+Run an automated incident diagnosis.
+
+```python
+result = client.diagnose_incident("latency", instance="pg-main")
+print(result["summary"])
+```
+
+### `client.query_metrics(query, source=None, dsn=None, start=None, end=None)`
+
+Query collected metrics with optional time range filter.
+
+```python
+metrics = client.query_metrics("pg_stat_bgwriter", start="2026-04-30T00:00:00Z")
+for row in metrics:
+    print(row)
+```
+
+### `client.get_daemon_status()`
+
+Return status of all collector daemons.
+
+```python
+statuses = client.get_daemon_status()
+for name, st in statuses.items():
+    print(f"{name}: {st}")
+```
+
 ---
 
 ## Plugin Routes

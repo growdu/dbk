@@ -6,7 +6,7 @@ import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from dbk.alerting.models import (
     Alert,
@@ -40,7 +40,7 @@ def load_rules(path: Path) -> list[AlertRule]:
     Raises ValueError if the file is malformed.
     """
     if not path.exists():
-        return []
+        raise FileNotFoundError(f"Rules file not found: {path}")
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
@@ -76,9 +76,13 @@ class AlertEngine:
     def __init__(
         self,
         rules: list[AlertRule] | None = None,
-        cooldown_sec: int = 300,
+        cooldown_sec: int | None = None,
     ) -> None:
         self.rules = rules or []
+        # Use config default if no explicit value given.
+        if cooldown_sec is None:
+            from dbk.config import alerting_cooldown_sec
+            cooldown_sec = alerting_cooldown_sec()
         self.default_cooldown_sec = cooldown_sec
         # Active alert tracking: rule_name -> {
         #   "alert": Alert,
@@ -87,17 +91,17 @@ class AlertEngine:
         # }
         self._active_alerts: dict[str, dict[str, Any]] = {}
         # Event bus for observers
-        self._listeners: list[callable] = []
+        self._listeners: list[Callable[..., Any]] = []
 
     # ------------------------------------------------------------------
     # Listeners
     # ------------------------------------------------------------------
 
-    def add_listener(self, fn: callable) -> None:
+    def add_listener(self, fn: Callable[..., Any]) -> None:
         """Register a callable to receive AlertEvent objects."""
         self._listeners.append(fn)
 
-    def remove_listener(self, fn: callable) -> None:
+    def remove_listener(self, fn: Callable[..., Any]) -> None:
         """Unregister a callable."""
         try:
             self._listeners.remove(fn)

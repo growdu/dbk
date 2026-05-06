@@ -1,0 +1,57 @@
+# DBK Default Configuration
+# Copy this file to ~/.config/dbk/config.toml or ./config.toml to customize.
+
+# -----------------------------------------------------------------------
+# Core DBK settings.
+# -----------------------------------------------------------------------
+[dbk]
+# root = ""           # Override the .dbk/ working directory
+# runtime_db_path = ""  # Override the SQLite runtime DB path
+# artifacts_root = ""    # Override the artifacts directory
+
+# -----------------------------------------------------------------------
+# API Server settings.
+# -----------------------------------------------------------------------
+[api_server]
+host = "127.0.0.1"
+port = 8080
+workers = 1
+log_level = "info"
+
+# -----------------------------------------------------------------------
+# Alerting settings.
+# -----------------------------------------------------------------------
+[alerting]
+interval_sec = 60
+prometheus_host = "127.0.0.1"
+prometheus_port = 9090
+cooldown_sec = 300
+
+# -----------------------------------------------------------------------
+# Agent settings.
+# -----------------------------------------------------------------------
+[agent]
+# provider = "mock"  # 'mock', 'openai', or 'anthropic'
+# model = ""         # Provider-specific model name (overridden by CLI flags)
+archive_interval = 5  # Archive conversation turns to memory every N turns
+
+# -----------------------------------------------------------------------
+# Provider credentials and defaults.
+# -----------------------------------------------------------------------
+[providers]
+# OpenAI
+# openai_api_key = ""
+# openai_model = "gpt-4o-mini"
+# openai_base_url = ""  # For OpenRouter or other OpenAI-compatible proxies
+
+# Anthropic
+# anthropic_api_key = ""
+# anthropic_model = "claude-3-5-haiku-20241022"
+# anthropic_base_url = ""  # For MiniMax or other Anthropic-compatible proxies
+
+# -----------------------------------------------------------------------
+# Logging settings.
+# -----------------------------------------------------------------------
+[logging]
+level = "info"
+format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"

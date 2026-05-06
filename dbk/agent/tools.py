@@ -118,7 +118,7 @@ def tool_diagnose_incident(
     result = diagnose_latency_incident(
         store=store,
         instance=instance,
-        task_id=task_id,
+        task_id=task_id or "",
         artifacts_root=artifacts_root(),
         auto_trace=auto_trace,
         thresholds=thresholds,

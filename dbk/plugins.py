@@ -39,7 +39,7 @@ import os
 import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from dbk.agent.tools import ToolRegistry
@@ -68,7 +68,12 @@ def hookimpl(func):
         def dbk_tool_register(registry):
             registry.register(MyTool(...))
     """
-    func._dbk_hook = True  # type: ignore[attr-defined]
+    if not hasattr(func, "_dbk_hook") and func.__name__ not in _HOOK_NAMES:
+        raise ValueError(
+            f"Unknown hook name '{func.__name__}'. "
+            f"Expected one of: {sorted(_HOOK_NAMES)}"
+        )
+    func._dbk_hook = True
     return func
 
 
@@ -215,7 +220,7 @@ class PluginRegistry:
         except TypeError:
             # Python < 3.10: entry_points() returns a dict
             all_eps = entry_points()
-            eps = all_eps.get("dbk.plugins", [])
+            eps = cast(Any, all_eps).get("dbk.plugins", [])
 
         for ep in eps:
             try:

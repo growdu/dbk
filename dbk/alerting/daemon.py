@@ -10,8 +10,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Callable
+from typing import Callable, cast
 
+from dbk.alerting.agent_responder import AgentResponder, AgentResponderConfig, start_responder
 from dbk.alerting.engine import AlertEngine
 from dbk.alerting.models import AlertEvent, AlertRule
 from dbk.alerting.notifiers import AlertNotifier, CompositeNotifier, LogNotifier, WebhookNotifier
@@ -72,7 +73,7 @@ def read_state(path: Path | None = None) -> dict[str, object] | None:
     state_path = path or alert_daemon_state_path()
     if not state_path.exists():
         return None
-    return json.loads(state_path.read_text(encoding="utf-8"))
+    return cast(dict[str, object], json.loads(state_path.read_text(encoding="utf-8")))
 
 
 def is_pid_running(pid: int) -> bool:
@@ -104,7 +105,7 @@ def start_alert_daemon(
     state_path = alert_daemon_state_path(cwd)
     log_path = alert_daemon_log_path(cwd)
     existing = read_state(state_path)
-    if existing and is_pid_running(int(existing["pid"])):
+    if existing and is_pid_running(int(existing["pid"]) if isinstance(existing["pid"], (int, float, str)) else 0):
         raise RuntimeError(
             f"alert daemon already running with pid={existing['pid']}"
         )
@@ -167,7 +168,7 @@ def stop_alert_daemon(
     if state is None:
         return {"stopped": False, "reason": "not_running"}
 
-    pid = int(state["pid"])
+    pid = int(state["pid"]) if isinstance(state["pid"], (int, float, str)) else 0
     if not is_pid_running(pid):
         state_path.unlink(missing_ok=True)
         return {"stopped": True, "pid": pid, "signal": "none"}
@@ -212,7 +213,7 @@ def alert_daemon_status(*, cwd: Path | None = None) -> dict[str, object]:
     state = read_state(state_path)
     if state is None:
         return {"running": False}
-    running = is_pid_running(int(state["pid"]))
+    running = is_pid_running(int(state["pid"]) if isinstance(state["pid"], (int, float, str)) else 0)
     payload = dict(state)
     payload["running"] = running
     payload["state_path"] = str(state_path)
@@ -229,23 +230,34 @@ def run_alert_loop(
     prometheus_port: int = 9090,
     state_path: Path | None = None,
     cwd: Path | None = None,
+    agent: "Agent | None" = None,
 ) -> int:
     """Main loop for the alert daemon."""
     from dbk.alerting.engine import load_rules
 
     target_state_path = state_path or alert_daemon_state_path(cwd)
     target_state = read_state(target_state_path) or {}
+    _interval_sec_val = target_state.get("interval_sec")
+    _interval_sec = int(_interval_sec_val) if isinstance(_interval_sec_val, (int, float, str)) else interval_sec
+    _total_evaluations_val = target_state.get("total_evaluations")
+    _total_evaluations = int(_total_evaluations_val) if isinstance(_total_evaluations_val, (int, float, str)) else 0
+    _total_firings_val = target_state.get("total_firings")
+    _total_firings = int(_total_firings_val) if isinstance(_total_firings_val, (int, float, str)) else 0
+    _total_resolutions_val = target_state.get("total_resolutions")
+    _total_resolutions = int(_total_resolutions_val) if isinstance(_total_resolutions_val, (int, float, str)) else 0
+    _last_evaluation_at = target_state.get("last_evaluation_at")
+    _last_error = target_state.get("last_error")
     state = AlertDaemonState(
         pid=os.getpid(),
         started_at=str(target_state.get("started_at", utc_now_iso())),
-        interval_sec=int(target_state.get("interval_sec", interval_sec)),
+        interval_sec=_interval_sec,
         rules_loaded=0,
-        total_evaluations=int(target_state.get("total_evaluations", 0)),
-        total_firings=int(target_state.get("total_firings", 0)),
-        total_resolutions=int(target_state.get("total_resolutions", 0)),
+        total_evaluations=_total_evaluations,
+        total_firings=_total_firings,
+        total_resolutions=_total_resolutions,
         log_path=str(target_state.get("log_path", alert_daemon_log_path(cwd))),
-        last_evaluation_at=target_state.get("last_evaluation_at"),
-        last_error=target_state.get("last_error"),
+        last_evaluation_at=cast(str | None, _last_evaluation_at),
+        last_error=cast(str | None, _last_error),
     )
 
     # Load rules
@@ -283,6 +295,12 @@ def run_alert_loop(
 
     engine.add_listener(on_event)
 
+    # Wire AgentResponder: alert → agent diagnostic session (AIOps闭环).
+    agent_responder: AgentResponder | None = None
+    if agent is not None:
+        agent_responder = start_responder(alert_engine=engine, agent=agent)
+        print("[alert-daemon] Agent responder enabled: alerts will trigger diagnostic sessions", flush=True)
+
     stop_flag = {"stop": False}
 
     def handle_signal(_sig: int, _frame: object) -> None:
@@ -317,7 +335,7 @@ def run_alert_loop(
             if prom_exporter:
                 firing = engine.get_firing_alerts()
                 prom_exporter.sync_alerts(firing)
-                counts = engine.get_firing_count_by_severity()
+                counts = cast("dict[str, int]", engine.get_firing_count_by_severity())
                 prom_exporter.sync_summary(
                     firing=engine.get_active_count(),
                     warning=counts.get("warning", 0),

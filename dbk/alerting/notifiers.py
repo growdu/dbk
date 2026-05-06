@@ -90,7 +90,7 @@ class WebhookNotifier(AlertNotifier):
         import hmac
         import hashlib
         return hmac.new(
-            self.secret.encode("utf-8"),
+            self.secret.encode("utf-8") if self.secret else b"",
             payload_bytes,
             hashlib.sha256,
         ).hexdigest()

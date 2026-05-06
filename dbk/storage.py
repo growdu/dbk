@@ -5,7 +5,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .models import RuntimeEvent, TraceArtifact
+from .models import RuntimeEvent, TraceArtifact, utc_now_iso
 
 
 class RuntimeStore:
@@ -53,6 +53,33 @@ class RuntimeStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS trace_approval_audit (
+                  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                  ts              TEXT    NOT NULL,
+                  task_id         TEXT    NOT NULL,
+                  username        TEXT    NOT NULL,
+                  action_id       TEXT    NOT NULL,
+                  command_json    TEXT    NOT NULL,
+                  duration_sec    INTEGER NOT NULL,
+                  profile         TEXT    NOT NULL,
+                  mode            TEXT    NOT NULL,
+                  escalation      TEXT    NOT NULL,
+                  exit_code       INTEGER,
+                  approved_by_cli INTEGER NOT NULL DEFAULT 0,
+                  error           TEXT
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_trace_audit_task_id "
+                "ON trace_approval_audit(task_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_trace_audit_ts "
+                "ON trace_approval_audit(ts)"
+            )
 
     def insert_events(self, events: list[RuntimeEvent]) -> int:
         if not events:
@@ -94,6 +121,51 @@ class RuntimeStore:
                     artifact.duration_sec,
                     artifact.artifact_path,
                     json.dumps(artifact.summary_json, ensure_ascii=True),
+                ),
+            )
+
+    def insert_trace_audit(
+        self,
+        *,
+        task_id: str,
+        username: str,
+        action_id: str,
+        command: list[str],
+        duration_sec: int,
+        profile: str,
+        mode: str,
+        escalation: str,
+        exit_code: int | None = None,
+        approved_by_cli: bool = False,
+        error: str | None = None,
+    ) -> None:
+        """Record a trace-approval event in the audit log.
+
+        Audit failures are silently swallowed — we never let a missed audit record
+        break the trace command.
+        """
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO trace_approval_audit
+                (ts, task_id, username, action_id, command_json,
+                 duration_sec, profile, mode, escalation,
+                 exit_code, approved_by_cli, error)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    utc_now_iso(),
+                    task_id,
+                    username,
+                    action_id,
+                    json.dumps(command, ensure_ascii=True),
+                    duration_sec,
+                    profile,
+                    mode,
+                    escalation,
+                    exit_code,
+                    int(approved_by_cli),
+                    error,
                 ),
             )
 

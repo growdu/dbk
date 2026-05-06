@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Callable
+from typing import Callable, cast
 
 from .config import collector_daemon_dir, collector_daemon_log_path, collector_daemon_state_path
 from .models import utc_now_iso
@@ -64,7 +64,8 @@ def _list_state_paths(cwd: Path | None = None) -> list[Path]:
 
 def _state_priority(state: dict[str, object]) -> int:
     try:
-        return int(state.get("priority", 50))
+        raw = state.get("priority", 50)
+        return int(raw) if raw is not None else 50  # type: ignore[call-overload]
     except Exception:
         return 50
 
@@ -73,7 +74,7 @@ def read_state(path: Path | None = None) -> dict[str, object] | None:
     state_path = path or collector_daemon_state_path(instance="default")
     if not state_path.exists():
         return None
-    return json.loads(state_path.read_text(encoding="utf-8"))
+    return cast(dict[str, object], json.loads(state_path.read_text(encoding="utf-8")))
 
 
 def is_pid_running(pid: int) -> bool:
@@ -112,7 +113,7 @@ def start_daemon(
     state_path = collector_daemon_state_path(cwd, instance=instance)
     log_path = collector_daemon_log_path(cwd, instance=instance)
     existing = read_state(state_path)
-    if existing and is_pid_running(int(existing["pid"])):
+    if existing and is_pid_running(int(existing["pid"])):  # type: ignore[call-overload]
         raise RuntimeError(f"collector daemon already running with pid={existing['pid']}")
 
     running_daemons = [item for item in list_daemons(cwd=cwd, include_stale=False) if item.get("running")]
@@ -197,7 +198,7 @@ def stop_daemon(
     if state is None:
         return {"stopped": False, "reason": "not_running", "instance": instance}
 
-    pid = int(state["pid"])
+    pid = int(state["pid"])  # type: ignore[call-overload]
     if not is_pid_running(pid):
         state_path.unlink(missing_ok=True)
         return {"stopped": True, "pid": pid, "signal": "none", "instance": state.get("instance", instance)}
@@ -271,7 +272,7 @@ def list_daemons(
         state = read_state(path)
         if not state:
             continue
-        running = is_pid_running(int(state["pid"]))
+        running = is_pid_running(int(state["pid"]))  # type: ignore[call-overload]
         payload = dict(state)
         payload["running"] = running
         payload["state_path"] = str(path)
@@ -279,7 +280,8 @@ def list_daemons(
         if not isinstance(payload_tags, list):
             payload["tags"] = []
         if tag:
-            state_tags = [str(item) for item in payload["tags"]]
+            tags_list = payload.get("tags")
+            state_tags = [str(item) for item in tags_list] if isinstance(tags_list, list) else []
             if tag not in state_tags:
                 continue
         if source and str(payload.get("source", "")) != source:
@@ -305,7 +307,7 @@ def daemon_status(*, instance: str | None = None, cwd: Path | None = None) -> di
     state = read_state(state_path)
     if state is None:
         return {"running": False, "instance": instance}
-    pid = int(state["pid"])
+    pid = int(state["pid"])  # type: ignore[call-overload]
     running = is_pid_running(pid)
     payload = dict(state)
     payload["running"] = running
@@ -335,21 +337,21 @@ def run_loop(
     target_state_path = state_path or collector_daemon_state_path(instance="default")
     target_state = read_state(target_state_path) or {}
     state_max_cpm_raw = target_state.get("max_collections_per_minute", max_collections_per_minute)
-    state_max_cpm = int(state_max_cpm_raw) if state_max_cpm_raw is not None else None
+    state_max_cpm: int | None = int(state_max_cpm_raw) if state_max_cpm_raw is not None else None  # type: ignore[call-overload]
     state = CollectorDaemonState(
         pid=os.getpid(),
         instance=str(target_state.get("instance", "unknown")),
         source=str(target_state.get("source", "unknown")),
-        interval_sec=int(target_state.get("interval_sec", interval_sec)),
-        priority=int(target_state.get("priority", 50)),
-        tags=[str(item) for item in target_state.get("tags", [])] if isinstance(target_state.get("tags"), list) else [],
+        interval_sec=int(target_state.get("interval_sec", interval_sec)),  # type: ignore[call-overload]
+        priority=int(target_state.get("priority", 50)),  # type: ignore[call-overload]
+        tags=target_state.get("tags") if isinstance(target_state.get("tags"), list) else [],  # type: ignore[arg-type]
         max_collections_per_minute=state_max_cpm,
         started_at=str(target_state.get("started_at", utc_now_iso())),
         log_path=str(target_state.get("log_path", collector_daemon_log_path(instance="default"))),
-        last_heartbeat_at=target_state.get("last_heartbeat_at"),  # type: ignore[arg-type]
-        last_success_at=target_state.get("last_success_at"),  # type: ignore[arg-type]
-        last_error=target_state.get("last_error"),  # type: ignore[arg-type]
-        total_collections=int(target_state.get("total_collections", 0)),
+        last_heartbeat_at=str(target_state.get("last_heartbeat_at")),
+        last_success_at=str(target_state.get("last_success_at")),
+        last_error=str(target_state.get("last_error")),
+        total_collections=int(target_state.get("total_collections", 0)),  # type: ignore[call-overload]
     )
 
     stop_flag = {"stop": False}

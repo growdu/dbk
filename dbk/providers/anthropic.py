@@ -23,16 +23,19 @@ def _get_anthropic_client(
     timeout_sec: float = 60.0,
 ) -> Any:
     """Create an Anthropic client with optional custom base_url (MiniMax, OpenRouter, etc.)."""
+    from dbk.config import provider_anthropic_api_key, provider_anthropic_base_url
+
     if api_key is None:
-        api_key = os.environ.get("DBK_ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN") or ""
+        api_key = provider_anthropic_api_key()
 
     if not api_key:
         raise ProviderAuthError(
-            "Anthropic API key not found. Set DBK_ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN."
+            "Anthropic API key not found. Set DBK_ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, "
+            "or [providers] anthropic_api_key in config."
         )
 
     if base_url is None:
-        base_url = os.environ.get("ANTHROPIC_BASE_URL") or os.environ.get("DBK_ANTHROPIC_BASE_URL")
+        base_url = provider_anthropic_base_url()
 
     # Try anthropic>=0.20 first (newer API).
     try:
@@ -79,7 +82,9 @@ class AnthropicProvider(BaseProvider):
         super().__init__(**kwargs)
         self._api_key = api_key
         self._base_url = base_url
-        self._default_model = model or os.environ.get("DBK_MODEL") or "claude-3-5-haiku-20241022"
+        from dbk.config import provider_anthropic_model
+
+        self._default_model = model or os.environ.get("DBK_MODEL") or provider_anthropic_model()
         self._default_max_tokens = default_max_tokens
         self._client: Any = None
 
@@ -153,7 +158,7 @@ class AnthropicProvider(BaseProvider):
             if self._is_new_api():
                 request_params: dict[str, Any] = {
                     "model": effective_model,
-                    "messages": formatted_messages,  # type: ignore[arg-type]
+                    "messages": formatted_messages,
                     "max_tokens": max_tokens,
                     **extra_kwargs,
                 }
@@ -192,9 +197,9 @@ class AnthropicProvider(BaseProvider):
                     params["system"] = system_prompt
 
                 response = client.completions.create(
-                    prompt=client.messages.format(  # type: ignore[union-attr]
+                    prompt=client.messages.format(
                         messages=formatted_messages
-                    ),  # type: ignore[arg-type]
+                    ),
                     **params,
                 )
                 content = response.completion if hasattr(response, "completion") else str(response)
@@ -233,7 +238,7 @@ class AnthropicProvider(BaseProvider):
             if self._is_new_api():
                 request_params: dict[str, Any] = {
                     "model": effective_model,
-                    "messages": formatted_messages,  # type: ignore[arg-type]
+                    "messages": formatted_messages,
                     "max_tokens": max_tokens,
                     "stream": True,
                     **extra_kwargs,

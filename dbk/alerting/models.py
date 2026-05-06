@@ -50,7 +50,7 @@ class AlertRule:
         fn = ops.get(self.operator)
         if fn is None:
             return False
-        return fn(value, self.threshold)
+        return bool(fn(value, self.threshold))
 
     def to_dict(self) -> dict[str, Any]:
         return {

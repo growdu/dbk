@@ -168,6 +168,8 @@ class AlertStore:
             params.append(state.value)
         if since_hours:
             cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=since_hours)
+            # Strip microseconds so ISO string comparison works correctly in SQLite
+            cutoff = cutoff.replace(microsecond=0)
             sql += " AND fired_at >= ?"
             params.append(cutoff.isoformat())
         sql += " ORDER BY fired_at DESC LIMIT ?"
@@ -221,6 +223,8 @@ class AlertStore:
             params.append(event_type)
         if since_hours:
             cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=since_hours)
+            # Strip microseconds so ISO string comparison works correctly in SQLite
+            cutoff = cutoff.replace(microsecond=0)
             sql += " AND fired_at >= ?"
             params.append(cutoff.isoformat())
         sql += " ORDER BY fired_at DESC LIMIT ?"

@@ -6,7 +6,7 @@ from typing import Any
 from .models import RuntimeEvent
 
 try:
-    import psycopg  # type: ignore
+    import psycopg
 except Exception:  # pragma: no cover - tested by behavior, not import internals
     psycopg = None
 

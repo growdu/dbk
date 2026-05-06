@@ -1,1 +1,5 @@
 dbk
+dbk_plugins
+doc
+frontend
+tests

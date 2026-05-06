@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import Any, Generator
+from typing import Any, Generator, Literal
 
 from dbk.agent.intent import IntentRecognizer
 from dbk.agent.session import SessionManager
@@ -44,6 +44,12 @@ You help users manage PostgreSQL kernel observability tasks including:
 Available tools: collect_metrics, query_metrics, health_check, diagnose_incident,
 run_trace, cleanup_data, start_collector_daemon, stop_collector_daemon,
 daemon_status, validate_config, list_daemons, cleanup_report.
+
+Workflow Stages: The agent operates within an 8-stage workflow pipeline:
+  requirements -> design -> implement -> test -> runtime -> doc -> ops -> done.
+Each stage has a specific focus and a ranked set of recommended tools.
+Always be aware of the current workflow stage (provided in context) and
+prioritize tools that are appropriate for that stage.
 
 Be concise and actionable. Prioritize correctness and safety (dry-run before destructive ops).
 When uncertain, explain the risk and suggest a safer alternative.
@@ -121,7 +127,7 @@ class Agent:
         # Build conversation for LLM.
         system_msg = CompletionMessage(role="system", content=SYSTEM_PROMPT)
         history_msgs = [
-            CompletionMessage(role=m["role"], content=m["content"])
+            CompletionMessage(role=m["role"], content=m["content"])  # type: ignore[arg-type]
             for m in state.conversation_history
         ]
         tool_schemas = self._tool_registry.tool_schemas()
@@ -205,7 +211,7 @@ class Agent:
         intent, params = self._intent_recognizer.recognize(message)
         system_msg = CompletionMessage(role="system", content=SYSTEM_PROMPT)
         history_msgs = [
-            CompletionMessage(role=m["role"], content=m["content"])
+            CompletionMessage(role=m["role"], content=m["content"])  # type: ignore[arg-type]
             for m in state.conversation_history
         ]
         tool_context = "\n".join(
@@ -261,11 +267,16 @@ class Agent:
         return self._session_store.list_sessions()
 
     def _parse_tool_calls(self, text: str) -> list[dict[str, Any]]:
-        """Extract tool call blocks from LLM response text."""
-        calls: list[dict[str, Any]] = []
-        # Look for JSON code blocks with tool calls.
+        """Extract tool call blocks from LLM response text.
+
+        Recognises two formats:
+        1. Standard JSON: { "name": "...", "parameters": {...} }
+        2. Clojure-style: {tool => "...", args => {...}}  (used by some Haiku outputs)
+        """
         import re
-        # Match ```json ... ``` blocks
+        calls: list[dict[str, Any]] = []
+
+        # Format 1: standard JSON { "name": ..., "parameters": ... }
         for match in re.finditer(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL):
             try:
                 data = json.loads(match.group(1))
@@ -277,6 +288,32 @@ class Agent:
                             calls.append(item)
             except json.JSONDecodeError:
                 pass
+
+        # Format 2: {tool => "name", args => {...}} — convert to {name, parameters}
+        # Also handles bare {tool => "name"} without args.
+        for match in re.finditer(
+            r"\{[^{}]*tool\s*=>\s*\"([^\"]+)\"[^}]*\}", text
+        ):
+            try:
+                raw = match.group(0)
+                # Extract tool name
+                name_m = re.search(r"tool\s*=>\s*\"([^\"]+)\"", raw)
+                if not name_m:
+                    continue
+                tool_name = name_m.group(1)
+                # Extract args block if present
+                args_m = re.search(r"args\s*=>\s*(\{[^}]*\})", raw)
+                if args_m:
+                    try:
+                        args = json.loads(args_m.group(1).replace("=>", ":"))
+                    except json.JSONDecodeError:
+                        args = {}
+                else:
+                    args = {}
+                calls.append({"name": tool_name, "parameters": args})
+            except Exception:  # noqa: BLE001
+                pass
+
         return calls
 
     def _build_response_text(

@@ -237,6 +237,20 @@ class TestAPIServerIntegration:
         resp = client.post(f"/sessions/{sid}/workflow", params={"stage": "implement"})
         assert resp.status_code == 400
 
+    def test_advance_workflow_not_found(self, client: Any) -> None:
+        """Advance workflow on a non-existent session returns 404."""
+        fake_id = str(uuid.uuid4())
+        resp = client.post(f"/sessions/{fake_id}/workflow", params={"stage": "design"})
+        assert resp.status_code == 404
+
+    def test_chat_auto_creates_session(self, client: Any) -> None:
+        """POST /chat without session_id auto-creates one."""
+        resp = client.post("/chat", params={"message": "hello"})
+        data = resp.json()
+        assert resp.status_code == 200
+        assert "session_id" in data
+        assert data["content"] is not None
+
     # Memory endpoints.
     def test_memory_remember(self, client: Any) -> None:
         sid = str(uuid.uuid4())
@@ -330,6 +344,7 @@ class TestAPIServerSubprocess:
                 **dict(__import__("os").environ),
                 "DBK_RUNTIME_DB_PATH": str(db_path),
                 "DBK_ROOT": tmpdir,
+                "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
                 "HTTP_PROXY": "",
                 "HTTPS_PROXY": "",
                 "ALL_PROXY": "",

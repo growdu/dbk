@@ -16,6 +16,7 @@ from dbk.agent.memory import AgentMemory, SQLiteMemoryBackend
 from dbk.agent.session_store import SessionStore
 from dbk.agent.state import WorkflowStage
 from dbk.agent.workflow import WorkflowStateMachine
+from dbk.providers.base import BaseProvider
 from dbk.providers.mock import MockProvider
 
 # Lazy import to avoid hard dependency on fastapi/uvicorn at import time.
@@ -54,7 +55,23 @@ class AppState:
         agent: Agent | None = None,
         memory: AgentMemory | None = None,
     ) -> None:
-        self.agent = agent or Agent(provider=MockProvider())
+        from dbk.config import agent_provider, agent_model
+
+        provider_name = agent_provider()
+        if provider_name == "openai":
+            from dbk.providers.openai import OpenAIProvider
+
+            _model = agent_model() or None
+            _provider: BaseProvider = OpenAIProvider(model=_model)
+        elif provider_name == "anthropic":
+            from dbk.providers.anthropic import AnthropicProvider
+
+            _model = agent_model() or None
+            _provider = AnthropicProvider(model=_model)
+        else:
+            _provider = MockProvider()
+
+        self.agent = agent or Agent(provider=_provider)
         self.memory = memory or AgentMemory()
 
 
@@ -268,7 +285,7 @@ def create_app(state: AppState | None = None) -> Any:
             done = False
             while not done:
                 try:
-                    token = await loop.run_in_executor(None, next, (lambda g=gen: g.__next__()), None)
+                    token: str | None = await loop.run_in_executor(None, next, (lambda g=gen: g.__next__()), None)  # type: ignore[arg-type]
                     if token is None:
                         done = True
                         break
@@ -448,14 +465,22 @@ def create_app(state: AppState | None = None) -> Any:
 # ----------------------------------------------------------------------
 
 
-_ARCHIVE_INTERVAL = 5  # Archive every N turns.
+_ARCHIVE_INTERVAL: int | None = None  # Lazily resolved from config.
+
+
+def _archive_interval() -> int:
+    global _ARCHIVE_INTERVAL
+    if _ARCHIVE_INTERVAL is None:
+        from dbk.config import agent_archive_interval
+        _ARCHIVE_INTERVAL = agent_archive_interval()
+    return _ARCHIVE_INTERVAL
 
 
 def _maybe_archive_to_memory(state: AppState, result: dict[str, Any]) -> None:
     """Archive chat turns to episodic memory periodically."""
     session_id = result.get("session_id", "")
     turn_count = result.get("turn_count", 0)
-    if turn_count % _ARCHIVE_INTERVAL != 0:
+    if turn_count % _archive_interval() != 0:
         return
     try:
         s = state.agent.get_session(session_id)
@@ -479,23 +504,26 @@ def _maybe_archive_to_memory(state: AppState, result: dict[str, Any]) -> None:
 
 
 def run_server(
-    host: str = "127.0.0.1",
-    port: int = 8080,
-    workers: int = 1,
-    log_level: str = "info",
+    host: str | None = None,
+    port: int | None = None,
+    workers: int | None = None,
+    log_level: str | None = None,
 ) -> None:
     """Run the API server with uvicorn.
 
-    This function blocks indefinitely.
+    Uses config values as defaults when arguments are None (i.e. when called
+    from code without explicit arguments). CLI arguments always override config.
     """
+    from dbk.config import api_server_host, api_server_log_level, api_server_port, api_server_workers
+
     uvicorn = __import__("uvicorn").run
     app = create_app()
     uvicorn(
         app,
-        host=host,
-        port=port,
-        workers=workers,
-        log_level=log_level,
+        host=host if host is not None else api_server_host(),
+        port=port if port is not None else api_server_port(),
+        workers=workers if workers is not None else api_server_workers(),
+        log_level=log_level if log_level is not None else api_server_log_level(),
     )
 
 

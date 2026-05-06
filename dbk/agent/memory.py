@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 
 def _utc_now() -> str:
@@ -281,7 +281,7 @@ class SQLiteMemoryBackend(MemoryBackend):
                 query += " ORDER BY importance DESC, created_at DESC LIMIT ?"
                 params.append(limit)
                 cur = conn.execute(query, params)
-                return [self._row_to_fact(row, cur.description) for row in cur.fetchall()]
+                return [self._row_to_fact(cast(tuple[Any, ...], row), cast(tuple[tuple[str, ...], ...], cur.description)) for row in cur.fetchall()]
             finally:
                 conn.close()
 
@@ -337,7 +337,7 @@ class SQLiteMemoryBackend(MemoryBackend):
                         "SELECT * FROM memory_summaries ORDER BY created_at DESC LIMIT ?",
                         (limit,),
                     )
-                return [self._row_to_summary(row, cur.description) for row in cur.fetchall()]
+                return [self._row_to_summary(cast(tuple[Any, ...], row), cast(tuple[tuple[str, ...], ...], cur.description)) for row in cur.fetchall()]
             finally:
                 conn.close()
 
@@ -385,7 +385,7 @@ class SQLiteMemoryBackend(MemoryBackend):
                         "ORDER BY turn_count DESC LIMIT ?",
                         (session_id, limit),
                     )
-                return [self._row_to_episode(row, cur.description) for row in cur.fetchall()]
+                return [self._row_to_episode(cast(tuple[Any, ...], row), cast(tuple[tuple[str, ...], ...], cur.description)) for row in cur.fetchall()]
             finally:
                 conn.close()
 

@@ -6,7 +6,7 @@ import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from dbk.agent.state import AgentState, WorkflowStage
 
@@ -101,7 +101,7 @@ class SessionStore:
                 row = cur.fetchone()
                 if row is None:
                     return None
-                return self._row_to_state(row, cur.description)
+                return self._row_to_state(cast(tuple[Any, ...], row), cast(tuple[tuple[str, ...], ...], cur.description))
             finally:
                 conn.close()
 
@@ -139,7 +139,7 @@ class SessionStore:
                     (limit, offset),
                 )
                 rows = cur.fetchall()
-                cols = [d[0] for d in cur.description]  # type: ignore[union-attr]
+                cols = [d[0] for d in cur.description]
                 return [dict(zip(cols, row)) for row in rows]
             finally:
                 conn.close()
@@ -159,7 +159,7 @@ class SessionStore:
                 conn.close()
 
     def _row_to_state(self, row: tuple[Any, ...], description: tuple[tuple[str, ...], ...]) -> AgentState:
-        cols = [d[0] for d in description]  # type: ignore[union-attr]
+        cols = [d[0] for d in description]
         data = dict(zip(cols, row))
         return AgentState(
             session_id=data["session_id"],

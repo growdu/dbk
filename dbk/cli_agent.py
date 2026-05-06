@@ -14,6 +14,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 from dbk.agent.core import Agent
 from dbk.agent.session_store import SessionStore
@@ -64,6 +65,39 @@ def _build_parser() -> argparse.ArgumentParser:
     # tools-list subcommand.
     sub.add_parser("tools-list", help="List registered agent tools")
 
+    # workflow subcommand group.
+    p_wf = sub.add_parser("workflow", help="Workflow orchestration commands")
+    p_wf_sub = p_wf.add_subparsers(dest="wf_subcmd", required=False)
+
+    p_wf_run = p_wf_sub.add_parser("run-full", help="Run the full workflow from REQUIREMENTS to DONE")
+    p_wf_run.add_argument("--goal", required=True, help="Workflow goal/objective")
+    p_wf_run.add_argument("--session", help="Session ID (auto-generated if omitted)")
+    p_wf_run.add_argument(
+        "--no-auto-transition",
+        action="store_true",
+        help="Disable auto-advance between stages",
+    )
+
+    p_wf_stage = p_wf_sub.add_parser(
+        "run-stage", help="Run a single workflow stage"
+    )
+    p_wf_stage.add_argument(
+        "--stage",
+        required=True,
+        choices=[s.value for s in WorkflowStage],
+        help="Target stage to run",
+    )
+    p_wf_stage.add_argument("--goal", required=True, help="Stage goal/objective")
+    p_wf_stage.add_argument("--session", help="Session ID (auto-generated if omitted)")
+
+    p_wf_status = p_wf_sub.add_parser("status", help="Show workflow status for a session")
+    p_wf_status.add_argument("--session", help="Session ID")
+
+    p_wf_list = p_wf_sub.add_parser("stages", help="List all workflow stages")
+    _ = p_wf_list.add_argument(
+        "--verbose", action="store_true", help="Show tool routing per stage"
+    )
+
     return parser
 
 
@@ -91,11 +125,8 @@ def cmd_session_clear(args: argparse.Namespace) -> int:
             return 2
     elif args.all:
         sessions = store.list_sessions(limit=10000)
-        deleted = 0
-        for s in sessions:
-            if store.delete(s["session_id"]):
-                deleted += 1
-        print(json.dumps({"deleted_all": True, "count": deleted}))
+        deleted_count = sum(1 for s in sessions if store.delete(s["session_id"]))
+        print(json.dumps({"deleted_all": True, "count": deleted_count}))
     else:
         print("Specify --session ID or --all to clear sessions.", file=sys.stderr)
         return 2
@@ -219,6 +250,114 @@ def cmd_interactive(agent: Agent, session_id: str | None) -> int:
     return 0
 
 
+def cmd_workflow_stages(verbose: bool = False) -> int:
+    """List all workflow stages."""
+    from dbk.agent.workflow import _STAGE_TOOL_ROUTING, _WORKFLOW_DESCRIPTIONS
+
+    stages: list[dict[str, Any]] = []
+    for stage in WorkflowStage:
+        info: dict[str, Any] = {
+            "stage": stage.value,
+            "description": _WORKFLOW_DESCRIPTIONS.get(stage, ""),
+        }
+        if verbose:
+            info["tools"] = _STAGE_TOOL_ROUTING.get(stage, [])
+        stages.append(info)
+    print(json.dumps({"stages": stages, "count": len(stages)}, indent=2, ensure_ascii=True))
+    return 0
+
+
+def cmd_workflow_status(session_id: str | None) -> int:
+    """Show workflow status for a session."""
+    if not session_id:
+        print("No --session specified. Use 'dbk agent workflow stages' to see all stages.", file=sys.stderr)
+        return 2
+    store = SessionStore()
+    state = store.load(session_id)
+    if state is None:
+        print(f"Session not found: {session_id}", file=sys.stderr)
+        return 2
+    wfm = WorkflowStateMachine(initial=state.workflow_stage)
+    print(
+        json.dumps(
+            {
+                "session_id": state.session_id,
+                "workflow_stage": state.workflow_stage.value,
+                "description": wfm.description,
+                "progress": wfm.progress_summary(),
+            },
+            indent=2,
+            ensure_ascii=True,
+        )
+    )
+    return 0
+
+
+def cmd_workflow_run_stage(
+    agent: Agent,
+    stage: str,
+    goal: str,
+    session_id: str | None,
+) -> int:
+    """Run a single workflow stage."""
+    from dbk.agent.workflow import WorkflowOrchestrator
+
+    target_stage = WorkflowStage(stage)
+    orchestrator = WorkflowOrchestrator(agent=agent)
+    result = orchestrator.run_stage(message=goal, target_stage=target_stage, session_id=session_id)
+    print(
+        json.dumps(
+            {
+                "session_id": session_id,
+                "stage": target_stage.value,
+                "result": result,
+            },
+            indent=2,
+            ensure_ascii=True,
+        )
+    )
+    return 0
+
+
+def cmd_workflow_run_full(
+    agent: Agent,
+    goal: str,
+    session_id: str | None,
+    auto_transition: bool = True,
+) -> int:
+    """Run the full workflow from REQUIREMENTS to DONE."""
+    from dbk.agent.workflow import WorkflowOrchestrator
+
+    # Get or create session.
+    if session_id:
+        state = agent.get_session(session_id)
+        if state:
+            session_id = state.session_id
+        else:
+            print(f"Session not found: {session_id}, creating new session.", file=sys.stderr)
+            session_id = None
+    if not session_id:
+        state = agent.create_session()
+        session_id = state.session_id
+
+    orchestrator = WorkflowOrchestrator(
+        agent=agent,
+        auto_transition_on_completion=auto_transition,
+    )
+    results = orchestrator.run_full_workflow(goal)
+    print(
+        json.dumps(
+            {
+                "session_id": session_id,
+                "results": results,
+            },
+            indent=2,
+            ensure_ascii=True,
+        )
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -250,6 +389,39 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.subcmd == "workflow-advance":
         return cmd_workflow_advance(args)
+
+    # workflow subcommand group.
+    if args.subcmd == "workflow":
+        wf_sub = args.wf_subcmd
+        if wf_sub == "run-full":
+            return cmd_workflow_run_full(
+                agent=agent,
+                goal=args.goal,
+                session_id=args.session,
+                auto_transition=not args.no_auto_transition,
+            )
+        if wf_sub == "run-stage":
+            return cmd_workflow_run_stage(
+                agent=agent,
+                stage=args.stage,
+                goal=args.goal,
+                session_id=args.session,
+            )
+        if wf_sub == "status":
+            return cmd_workflow_status(session_id=args.session)
+        if wf_sub == "stages":
+            return cmd_workflow_stages(verbose=args.verbose)
+        # No subcmd: show help for the workflow subparser group.
+        import argparse
+        subparsers = parser._subparsers
+        if subparsers is not None:
+            for act in subparsers._actions:
+                if isinstance(act, argparse._SubParsersAction):
+                    p_wf = act.choices.get("workflow")
+                    if p_wf:
+                        p_wf.print_help()
+                    break
+        return 0
 
     if args.info:
         return cmd_agent_info(agent)

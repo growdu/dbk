@@ -33,11 +33,13 @@ def _get_openai_client(
     timeout_sec: float = 60.0,
 ) -> Any:
     """Create an OpenAI client, auto-detecting the installed version."""
+    from dbk.config import provider_openai_api_key
+
     if api_key is None:
-        api_key = os.environ.get("DBK_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
+        api_key = provider_openai_api_key()
 
     if not api_key:
-        raise ProviderAuthError("OpenAI API key not found. Set DBK_OPENAI_API_KEY or OPENAI_API_KEY.")
+        raise ProviderAuthError("OpenAI API key not found. Set DBK_OPENAI_API_KEY, OPENAI_API_KEY, or [providers] openai_api_key in config.")
 
     if _OPENAI_V1:
         import openai
@@ -49,9 +51,6 @@ def _get_openai_client(
     else:
         import openai
 
-        extra_kwargs: dict[str, Any] = {"timeout": timeout_sec}
-        if base_url:
-            extra_kwargs["base_url"] = base_url
         return openai.ChatCompletion if hasattr(openai, "ChatCompletion") else None
 
 
@@ -83,7 +82,9 @@ class OpenAIProvider(BaseProvider):
     ) -> None:
         super().__init__(**kwargs)
         self._api_key = api_key
-        self._default_model = model or os.environ.get("DBK_MODEL") or "gpt-4o-mini"
+        from dbk.config import provider_openai_model
+
+        self._default_model = model or os.environ.get("DBK_MODEL") or provider_openai_model()
         self._base_url = base_url
         self._client: Any = None
 
@@ -125,7 +126,7 @@ class OpenAIProvider(BaseProvider):
                 client = self._client_obj()
                 response = client.chat.completions.create(
                     model=effective_model,
-                    messages=api_messages,  # type: ignore[arg-type]
+                    messages=api_messages,
                     **kwargs,
                 )
                 content = response.choices[0].message.content or ""
@@ -188,7 +189,7 @@ class OpenAIProvider(BaseProvider):
                 client = self._client_obj()
                 stream = client.chat.completions.create(
                     model=effective_model,
-                    messages=api_messages,  # type: ignore[arg-type]
+                    messages=api_messages,
                     stream=True,
                     **kwargs,
                 )

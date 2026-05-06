@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -344,9 +344,9 @@ class TestLoadRules:
         assert rules[0].severity == Severity.CRITICAL
         assert rules[1].operator == "lt"
 
-    def test_load_missing_file_returns_empty(self, tmp_path: Path) -> None:
-        rules = load_rules(tmp_path / "nonexistent.json")
-        assert rules == []
+    def test_load_missing_file_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(FileNotFoundError, match="Rules file not found"):
+            load_rules(tmp_path / "nonexistent.json")
 
     def test_load_malformed_json_raises(self, tmp_path: Path) -> None:
         rules_file = tmp_path / "bad.json"
@@ -422,15 +422,19 @@ class TestAlertStore:
     def test_query_alerts_filters(self, tmp_path: Path) -> None:
         store = AlertStore(tmp_path / "alerts.sqlite")
         store.init_schema()
+        # Use dynamic timestamps relative to now so tests are not date-sensitive.
+        now = datetime.now(tz=timezone.utc)
         alert1 = Alert(
             id="a1", rule_name="r1", metric="x", value=1.0, threshold=0.0,
             operator="gt", severity=Severity.CRITICAL, state=AlertState.FIRING,
-            instance="inst1", description="", fired_at="2026-04-30T01:00:00+00:00",
+            instance="inst1", description="",
+            fired_at=(now - timedelta(hours=2)).replace(microsecond=0).isoformat(),
         )
         alert2 = Alert(
             id="a2", rule_name="r2", metric="y", value=1.0, threshold=0.0,
             operator="gt", severity=Severity.WARNING, state=AlertState.FIRING,
-            instance="inst2", description="", fired_at="2026-04-30T02:00:00+00:00",
+            instance="inst2", description="",
+            fired_at=(now - timedelta(hours=1)).replace(microsecond=0).isoformat(),
         )
         store.insert_alert(alert1)
         store.insert_alert(alert2)
@@ -440,9 +444,9 @@ class TestAlertStore:
         assert len(store.query_alerts(instance="inst2")) == 1
         # Filter by state
         assert len(store.query_alerts(state=AlertState.FIRING)) == 2
-        # Filter by since_hours
-        assert len(store.query_alerts(since_hours=0.5)) == 0
-        assert len(store.query_alerts(since_hours=24.0)) == 2
+        # Filter by since_hours (only alerts within the last N hours)
+        assert len(store.query_alerts(since_hours=0.5)) == 0   # both are > 30 min ago
+        assert len(store.query_alerts(since_hours=24.0)) == 2  # both are within 24 h
 
     def test_count_firing_by_severity(self, tmp_path: Path) -> None:
         store = AlertStore(tmp_path / "alerts.sqlite")
@@ -518,21 +522,25 @@ class TestAlertStore:
     def test_delete_resolved_older_than(self, tmp_path: Path) -> None:
         store = AlertStore(tmp_path / "alerts.sqlite")
         store.init_schema()
-        # Insert old resolved alert
+        # Use timestamps relative to now so the test is not date-sensitive.
+        now = datetime.now(tz=timezone.utc)
+        old_resolved = (now - timedelta(days=30)).replace(microsecond=0).isoformat()
+        recent_resolved = (now - timedelta(hours=2)).replace(microsecond=0).isoformat()
+        # Insert old resolved alert (definitely older than 24 h)
         store.insert_alert(Alert(
             id="old1", rule_name="r", metric="x", value=1.0,
             threshold=0.0, operator="gt", severity=Severity.INFO,
             state=AlertState.RESOLVED, instance="inst",
-            description="", fired_at="2025-01-01T00:00:00+00:00",
-            resolved_at="2025-01-02T00:00:00+00:00",
+            description="", fired_at=old_resolved,
+            resolved_at=old_resolved,
         ))
-        # Insert recent resolved alert
+        # Insert recent resolved alert (well within 24 h — must NOT be deleted)
         store.insert_alert(Alert(
             id="new1", rule_name="r", metric="x", value=1.0,
             threshold=0.0, operator="gt", severity=Severity.INFO,
             state=AlertState.RESOLVED, instance="inst",
-            description="", fired_at="2026-04-30T00:00:00+00:00",
-            resolved_at="2026-04-30T01:00:00+00:00",
+            description="", fired_at=recent_resolved,
+            resolved_at=recent_resolved,
         ))
         deleted = store.delete_resolved_older_than(older_than_hours=24.0)
         assert deleted == 1
