@@ -5,6 +5,7 @@ dbk/__main__.py
 dbk/api_server.py
 dbk/cli.py
 dbk/cli_agent.py
+dbk/cli_tui.py
 dbk/collector_daemon.py
 dbk/collectors.py
 dbk/config.py
@@ -16,9 +17,12 @@ dbk/plugins.py
 dbk/retention.py
 dbk/runtime_cleanup.py
 dbk/runtime_cleanup_daemon.py
+dbk/sdk.py
+dbk/sdk_config.py
 dbk/storage.py
 dbk/thresholds.py
 dbk/tracing.py
+dbk/tui.py
 dbk.egg-info/PKG-INFO
 dbk.egg-info/SOURCES.txt
 dbk.egg-info/dependency_links.txt
@@ -37,6 +41,7 @@ dbk/agent/subagent.py
 dbk/agent/tools.py
 dbk/agent/workflow.py
 dbk/alerting/__init__.py
+dbk/alerting/agent_responder.py
 dbk/alerting/daemon.py
 dbk/alerting/engine.py
 dbk/alerting/models.py
@@ -53,6 +58,7 @@ dbk_plugins/samples/__init__.py
 dbk_plugins/samples/plugin.py
 tests/test_agent_api_server.py
 tests/test_agent_core.py
+tests/test_agent_memory.py
 tests/test_agent_tools.py
 tests/test_alert_daemon.py
 tests/test_alerting.py
@@ -68,12 +74,16 @@ tests/test_config_loader.py
 tests/test_diagnose.py
 tests/test_pg_collectors.py
 tests/test_pg_integration_docker.py
+tests/test_pg_integration_matrix.py
+tests/test_plugins.py
 tests/test_providers.py
 tests/test_retention.py
 tests/test_runtime_cleanup_report.py
+tests/test_sdk.py
 tests/test_storage.py
 tests/test_storage_retention.py
 tests/test_subagent.py
 tests/test_thresholds.py
 tests/test_tracing.py
+tests/test_tui.py
 tests/test_workflow_orchestrator.py
