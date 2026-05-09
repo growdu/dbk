@@ -194,9 +194,9 @@ class TestPluginDirs:
             monkeypatch.setenv("DBK_PLUGIN_DIR", tmpdir)
             reg = plugins.PluginRegistry()
             dirs = reg._plugin_dirs()
-            # env var dir should come first
-            assert dirs[0] == Path(tmpdir)
-            assert dirs[1] == Path.home() / ".dbk" / "plugins"
+            # On macOS /var/folders is a symlink to /private/var/folders — normalize.
+            assert dirs[0].resolve() == Path(tmpdir).resolve()
+            assert dirs[1].resolve() == (Path.home() / ".dbk" / "plugins").resolve()
 
 
 # ----------------------------------------------------------------------

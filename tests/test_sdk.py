@@ -148,7 +148,8 @@ class TestDBKClientInit:
     def test_init_sets_dbk_root_env_var(self, dbk_client_cls, clean_default_client):
         with tempfile.TemporaryDirectory() as tmpdir:
             client = dbk_client_cls({"dbk_root": tmpdir})
-            assert os.environ.get("DBK_ROOT") == tmpdir
+            # On macOS /var/folders is a symlink to /private/var/folders — normalize.
+            assert Path(os.environ.get("DBK_ROOT")).resolve() == Path(tmpdir).resolve()
 
 
 class TestDBKClientFromDSN:

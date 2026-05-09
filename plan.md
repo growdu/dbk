@@ -168,11 +168,11 @@
 
 策略：借鉴设计，不直接迁移。
 
-### 5.1 短期（当前迭代）
+### 5.1 短期（当前迭代）— ✅ 已完成（2026-05-09）
 
-* 保持 Python CLI 主体不变
-* 继续按“core/runtime/daemon/report”边界整理模块
-* 新功能优先以可测试的独立模块落地，避免 CLI 巨石化
+* ~~保持 Python CLI 主体不变~~ ✅ — 命令逻辑迁移至 `dbk/cli_commands/` 包（9 个命令模块）
+* ~~继续按"core/runtime/daemon/report"边界整理模块~~ ✅ — init_ / config / collect / runtime / diagnose / alert / run / api_server
+* ~~新功能优先以可测试的独立模块落地，避免 CLI 巨石化~~ ✅ — `cli.py` 从 1366 行压缩至 ~986 行，命令逻辑全部外移
 
 ### 5.2 中期（1-2 个迭代）
 

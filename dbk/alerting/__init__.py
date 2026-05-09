@@ -10,6 +10,7 @@ from dbk.alerting.engine import (
     evaluate_rules,
     load_rules,
 )
+from dbk.alerting.models import DEFAULT_ALERT_RULES
 from dbk.alerting.notifiers import (
     AlertNotifier,
     CompositeNotifier,
