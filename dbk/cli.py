@@ -942,6 +942,13 @@ def cmd_diagnose_latency(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="dbk", description="Database Kernel Agent CLI (MVP)")
+    # Global output format flag — accessible as `dbk --format json validate`
+    parser.add_argument(
+        "--format",
+        default="text",
+        choices=["text", "json", "json-lines"],
+        help="Output format for all commands (default: text)",
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     # Delegate all subcommand registration to the modular commands package.
@@ -979,7 +986,14 @@ def _run_tui(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    return cast(int, args.func(args))
+    result = args.func(args)
+    # Support both legacy int returns and new CommandResult contract.
+    from dbk.cli_commands.base import CommandResult, ResultFormatter
+    if isinstance(result, CommandResult):
+        formatter = ResultFormatter()
+        fmt = getattr(args, "format", "text")
+        return formatter.format(result, fmt)
+    return cast(int, result)
 
 
 if __name__ == "__main__":
