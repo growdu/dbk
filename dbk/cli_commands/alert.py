@@ -22,6 +22,8 @@ from dbk.config import dbk_root, load_config
 from dbk.storage import RuntimeStore
 from dbk.config import runtime_db_path
 
+from dbk.cli_commands.base import CommandGroup, CommandResult
+
 
 def _store() -> RuntimeStore:
     s = RuntimeStore(runtime_db_path())
@@ -53,31 +55,35 @@ def _collect_metrics_for_alerting(store: RuntimeStore, instance: str | None = No
     return metrics
 
 
-class AlertCommand:
+def _fmt_arg(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--format",
+        default=argparse.SUPPRESS,
+        choices=["text", "json", "json-lines"],
+        help="Output format (default: text)",
+    )
+
+
+class AlertCommand(CommandGroup):
     """'dbk alert' group — rules, daemon, history, prometheus."""
 
     name = "alert"
-    help = "Alerting system management"
+    subcommand = "alert"
+    subcommand_help = "Alerting system management"
 
-    def configure(self, subparsers) -> argparse.ArgumentParser:
-        p = subparsers.add_parser(self.name, help=self.help)
-        sub = p.add_subparsers(dest="alert_cmd", required=True)
-        self._register_subcommands(sub)
-        p.set_defaults(func=self._forward)
-        return p
-
-    def _register_subcommands(self, sub):
+    def register_subcommands(self, sub):
         # alert rules
         rules = sub.add_parser("rules", help="Manage alert rules")
         r = rules.add_subparsers(dest="alert_rules_cmd", required=True)
 
         pp = r.add_parser("list", help="List alert rules")
         pp.add_argument("--rules-path")
-        pp.add_argument("--format", choices=["text", "json"], default="text")
+        _fmt_arg(pp)
         pp.set_defaults(func=self._cmd_rules_list)
 
         pp = r.add_parser("validate", help="Validate a rules file")
         pp.add_argument("rules_path")
+        _fmt_arg(pp)
         pp.set_defaults(func=self._cmd_rules_validate)
 
         pp = r.add_parser("add", help="Add a new rule (print JSON)")
@@ -90,11 +96,13 @@ class AlertCommand:
         pp.add_argument("--instance")
         pp.add_argument("--min-duration", type=float, dest="min_duration")
         pp.add_argument("--cooldown", type=float)
+        _fmt_arg(pp)
         pp.set_defaults(func=self._cmd_rules_add)
 
         pp = r.add_parser("export", help="Export rules to a file")
         pp.add_argument("--path", required=True)
         pp.add_argument("--include-builtin", action="store_true")
+        _fmt_arg(pp)
         pp.set_defaults(func=self._cmd_rules_export)
 
         pp = r.add_parser("eval", help="Evaluate rules against current metrics")
@@ -102,6 +110,7 @@ class AlertCommand:
         pp.add_argument("--instance")
         pp.add_argument("--webhook-url")
         pp.add_argument("--webhook-secret")
+        _fmt_arg(pp)
         pp.set_defaults(func=self._cmd_rules_eval)
 
         # alert daemon
@@ -115,12 +124,15 @@ class AlertCommand:
         ps.add_argument("--webhook-secret")
         ps.add_argument("--prometheus-host", default="127.0.0.1")
         ps.add_argument("--prometheus-port", type=int, default=9090)
+        _fmt_arg(ps)
         ps.set_defaults(func=self._cmd_daemon_start)
 
         ps = d.add_parser("stop", help="Stop alert daemon")
+        _fmt_arg(ps)
         ps.set_defaults(func=self._cmd_daemon_stop)
 
         ps = d.add_parser("status", help="Show alert daemon status")
+        _fmt_arg(ps)
         ps.set_defaults(func=self._cmd_daemon_status)
 
         ps = d.add_parser("run", help="Run alert daemon in foreground")
@@ -132,6 +144,7 @@ class AlertCommand:
         ps.add_argument("--prometheus-port", type=int, default=9090)
         ps.add_argument("--state-path")
         ps.add_argument("--enable-agent", action="store_true")
+        _fmt_arg(ps)
         ps.set_defaults(func=self._cmd_daemon_run)
 
         # alert history
@@ -141,6 +154,7 @@ class AlertCommand:
         p.add_argument("--state", choices=["firing", "resolved"])
         p.add_argument("--since-hours", type=float)
         p.add_argument("--limit", type=int, default=50)
+        _fmt_arg(p)
         p.set_defaults(func=self._cmd_history)
 
         # alert prometheus
@@ -148,42 +162,36 @@ class AlertCommand:
         p.add_argument("--listen-host", default="127.0.0.1")
         p.add_argument("--listen-port", type=int, default=9090)
         p.add_argument("--once", action="store_true")
+        _fmt_arg(p)
         p.set_defaults(func=self._cmd_prometheus)
-
-    def _forward(self, args) -> int:
-        return getattr(args, "func", lambda _: 2)(args)
 
     # --- rules subcommands ---
 
-    def _cmd_rules_list(self, args) -> int:
+    def _cmd_rules_list(self, args) -> CommandResult:
         try:
             rules = load_alert_rules(Path(args.rules_path)) if args.rules_path else list(DEFAULT_ALERT_RULES)
         except (FileNotFoundError, ValueError) as exc:
-            print(f"Error loading rules: {exc}", file=sys.stderr)
-            return 2
+            return CommandResult.config_error(f"Error loading rules: {exc}")
         if args.format == "text":
             if not rules:
-                print("No rules loaded.")
-                return 0
+                return CommandResult.ok(message="No rules loaded.")
+            lines = []
             for r in rules:
-                print(f"  {r.name}: {r.metric} {r.operator} {r.threshold} [{r.severity.value}]")
+                lines.append(f"  {r.name}: {r.metric} {r.operator} {r.threshold} [{r.severity.value}]")
                 if r.instance:
-                    print(f"    instance={r.instance}")
-                print(f"    {r.description}")
-        else:
-            print(json.dumps({"rules": [r.to_dict() for r in rules], "count": len(rules)}, ensure_ascii=True, indent=2))
-        return 0
+                    lines.append(f"    instance={r.instance}")
+                lines.append(f"    {r.description}")
+            return CommandResult.ok(message="\n".join(lines), data={"count": len(rules)})
+        return CommandResult.ok(data={"rules": [r.to_dict() for r in rules], "count": len(rules)})
 
-    def _cmd_rules_validate(self, args) -> int:
+    def _cmd_rules_validate(self, args) -> CommandResult:
         try:
             rules = load_alert_rules(Path(args.rules_path))
-            print(json.dumps({"valid": True, "count": len(rules), "rules": [r.to_dict() for r in rules]}, ensure_ascii=True, indent=2))
-            return 0
+            return CommandResult.ok(data={"valid": True, "count": len(rules), "rules": [r.to_dict() for r in rules]})
         except (FileNotFoundError, ValueError) as exc:
-            print(json.dumps({"valid": False, "error": str(exc)}, ensure_ascii=True, indent=2))
-            return 2
+            return CommandResult.config_error(f"Error loading rules: {exc}")
 
-    def _cmd_rules_add(self, args) -> int:
+    def _cmd_rules_add(self, args) -> CommandResult:
         rule = AlertRule(
             name=args.name, metric=args.metric, operator=args.operator,
             threshold=args.threshold, severity=Severity(args.severity),
@@ -192,22 +200,20 @@ class AlertCommand:
             minimum_duration_sec=getattr(args, "min_duration", None),
             cooldown_sec=getattr(args, "cooldown", None),
         )
-        print(json.dumps({"added": rule.to_dict()}, ensure_ascii=True, indent=2))
-        return 0
+        return CommandResult.ok(data={"added": rule.to_dict()})
 
-    def _cmd_rules_export(self, args) -> int:
+    def _cmd_rules_export(self, args) -> CommandResult:
         rules = list(DEFAULT_ALERT_RULES)
         path = Path(args.path)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"rules": [r.to_dict() for r in rules]}, indent=2, ensure_ascii=True))
-        print(json.dumps({"exported": str(path), "count": len(rules)}))
-        return 0
+        return CommandResult.ok(message=f"Exported {len(rules)} rules to {path}", data={"path": str(path), "count": len(rules)})
 
-    def _cmd_rules_eval(self, args) -> int:
+    def _cmd_rules_eval(self, args) -> CommandResult:
         try:
             rules = load_alert_rules(Path(args.rules_path)) if args.rules_path else list(DEFAULT_ALERT_RULES)
         except (FileNotFoundError, ValueError) as exc:
-            print(f"Error loading rules: {exc}", file=sys.stderr)
-            return 2
+            return CommandResult.config_error(f"Error loading rules: {exc}")
         engine = AlertEngine(rules=rules)
         notifiers: list[AlertNotifier] = [LogNotifier()]
         if args.webhook_url:
@@ -223,7 +229,7 @@ class AlertCommand:
         events = engine.evaluate_batch(rt_metrics)
         firing = engine.get_firing_alerts()
         counts = engine.get_firing_count_by_severity()
-        print(json.dumps({
+        return CommandResult.ok(data={
             "events": [{"type": e.type, "alert": e.alert.to_dict()} for e in events],
             "firing": [a.to_dict() for a in firing],
             "summary": {
@@ -231,12 +237,11 @@ class AlertCommand:
                 "firing_count": engine.get_active_count(),
                 "by_severity": {k.value: v for k, v in counts.items()},
             },
-        }, ensure_ascii=True, indent=2))
-        return 0
+        })
 
     # --- daemon subcommands ---
 
-    def _cmd_daemon_start(self, args) -> int:
+    def _cmd_daemon_start(self, args) -> CommandResult:
         try:
             state = start_alert_daemon(
                 interval_sec=args.interval_sec,
@@ -248,28 +253,24 @@ class AlertCommand:
                 cwd=Path.cwd(),
             )
         except (RuntimeError, ValueError) as exc:
-            print(str(exc), file=sys.stderr)
-            return 2
-        print(json.dumps({"started": True, **state.to_dict()}, ensure_ascii=True, indent=2))
-        return 0
+            return CommandResult.runtime_error(str(exc))
+        return CommandResult.ok(data={"started": True, **state.to_dict()})
 
-    def _cmd_daemon_stop(self, args) -> int:
+    def _cmd_daemon_stop(self, args) -> CommandResult:
         payload = stop_alert_daemon(cwd=Path.cwd())
-        print(json.dumps(payload, ensure_ascii=True, indent=2))
-        return 0 if payload.get("stopped") else 2
+        return CommandResult.ok(data=payload)
 
-    def _cmd_daemon_status(self, args) -> int:
+    def _cmd_daemon_status(self, args) -> CommandResult:
         payload = alert_daemon_status(cwd=Path.cwd())
-        print(json.dumps(payload, ensure_ascii=True, indent=2))
-        return 0 if payload.get("running") else 2
+        return CommandResult.ok(data=payload)
 
-    def _cmd_daemon_run(self, args) -> int:
+    def _cmd_daemon_run(self, args) -> CommandResult:
         agent = None
         if args.enable_agent:
             from dbk.providers import get_provider
             from dbk.agent.core import Agent
             agent = Agent(provider=get_provider())
-        return run_alert_loop(
+        run_alert_loop(
             interval_sec=args.interval_sec,
             rules_path=Path(args.rules_path) if args.rules_path else None,
             webhook_url=args.webhook_url,
@@ -280,10 +281,11 @@ class AlertCommand:
             cwd=Path.cwd(),
             agent=agent,
         )
+        return CommandResult.ok(message="Alert daemon stopped.")
 
     # --- alert history ---
 
-    def _cmd_history(self, args) -> int:
+    def _cmd_history(self, args) -> CommandResult:
         store = AlertStore(dbk_root() / "alerts.sqlite")
         store.init_schema()
         state = AlertState(args.state) if args.state else None
@@ -291,12 +293,11 @@ class AlertCommand:
             rule_name=args.rule_name, instance=args.instance,
             state=state, since_hours=args.since_hours, limit=args.limit,
         )
-        print(json.dumps({"alerts": [a.to_dict() for a in alerts], "count": len(alerts)}, ensure_ascii=True, indent=2))
-        return 0
+        return CommandResult.ok(data={"alerts": [a.to_dict() for a in alerts], "count": len(alerts)})
 
     # --- alert prometheus ---
 
-    def _cmd_prometheus(self, args) -> int:
+    def _cmd_prometheus(self, args) -> CommandResult:
         exporter = AlertPrometheusExporter(listen_host=args.listen_host, listen_port=args.listen_port)
         store = AlertStore(dbk_root() / "alerts.sqlite")
         store.init_schema()
@@ -310,14 +311,11 @@ class AlertCommand:
             info=int(counts.get("info", 0)),
         )
         if args.once:
-            print(exporter.metrics_text, end="")
-            return 0
-        print(f"Alert Prometheus exporter listening on {args.listen_host}:{args.listen_port}")
-        print("Press Ctrl+C to stop.")
+            return CommandResult.ok(data={"metrics": exporter.metrics_text})
         exporter.start()
         try:
             while True:
                 time.sleep(60)
         except KeyboardInterrupt:
             exporter.stop()
-        return 0
+        return CommandResult.ok(message="Prometheus exporter stopped.")
