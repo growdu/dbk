@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import argparse
+
 from dbk.api_server import run_server
 
+from dbk.cli_commands.base import Command, CommandResult
 
-class APIServerCommand:
+
+class APIServerCommand(Command):
     """'dbk api-server' — start the DBK Agent REST API server."""
 
     name = "api-server"
@@ -20,7 +23,10 @@ class APIServerCommand:
         p.set_defaults(func=self.execute)
         return p
 
-    def execute(self, args: argparse.Namespace) -> int:
+    def execute(self, args: argparse.Namespace) -> CommandResult:
+        # Note: run_server() blocks until terminated.  A real implementation
+        # would spawn a daemon thread and return immediately; for now we
+        # keep the existing blocking behaviour and return only on interrupt.
         try:
             run_server(
                 host=args.host,
@@ -29,5 +35,5 @@ class APIServerCommand:
                 log_level=args.log_level,
             )
         except KeyboardInterrupt:
-            return 0
-        return 0
+            return CommandResult.ok(message="Server stopped.")
+        return CommandResult.ok(message="Server started.")

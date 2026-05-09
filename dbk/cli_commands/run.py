@@ -3,13 +3,16 @@ from __future__ import annotations
 
 import argparse
 import json
+
 from dbk.agent.core import Agent
 from dbk.agent.state import WorkflowStage
 from dbk.agent.workflow import WorkflowOrchestrator
 from dbk.providers import get_provider
 
+from dbk.cli_commands.base import Command, CommandResult
 
-class RunCommand:
+
+class RunCommand(Command):
     """'dbk run' — run agent with a natural-language goal."""
 
     name = "run"
@@ -23,10 +26,16 @@ class RunCommand:
         p.add_argument("--stage", help="Target workflow stage")
         p.add_argument("--no-auto-transition", dest="no_auto_transition", action="store_true")
         p.add_argument("--full", action="store_true", help="Run full workflow")
+        p.add_argument(
+            "--format",
+            default=argparse.SUPPRESS,
+            choices=["text", "json", "json-lines"],
+            help="Output format (default: text)",
+        )
         p.set_defaults(func=self.execute)
         return p
 
-    def execute(self, args: argparse.Namespace) -> int:
+    def execute(self, args: argparse.Namespace) -> CommandResult:
         provider = get_provider()
         agent = Agent(provider=provider)
 
@@ -58,8 +67,7 @@ class RunCommand:
             if state:
                 session_id = state.session_id
             else:
-                print(f"Session not found: {session_id}", file=__import__("sys").stderr)
-                return 2
+                return CommandResult.usage_error(f"Session not found: {session_id}")
 
         orchestrator = WorkflowOrchestrator(
             agent=agent, auto_transition_on_completion=not args.no_auto_transition
@@ -67,10 +75,9 @@ class RunCommand:
 
         if args.full:
             result = orchestrator.run_full_workflow(goal=args.goal, session_id=session_id)
-            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return CommandResult.ok(data=result)
         else:
             result = orchestrator.run_stage(
                 message=args.goal, target_stage=target_stage, session_id=session_id
             )
-            print(json.dumps(result, indent=2, ensure_ascii=False))
-        return 0
+            return CommandResult.ok(data=result)
