@@ -1,4 +1,13 @@
-"""DBK LLM Provider Layer."""
+"""DBK Provider Layer — LLM providers + Runtime providers.
+
+LLM providers (dbk.providers.base.BaseProvider):
+  MockProvider / OpenAIProvider / AnthropicProvider
+
+Runtime providers (dbk.providers.runtime):
+  MetricsProvider  — collect + query runtime metrics (mock / pgstat / prometheus)
+  StorageProvider  — persist runtime data (sqlite / influxdb)
+  AlertProvider    — evaluate alert rules (sqlite / influxdb)
+"""
 from __future__ import annotations
 
 import os
@@ -10,6 +19,16 @@ from dbk.providers.base import BaseProvider, CompletionMessage, CompletionRespon
 from dbk.providers.mock import MockProvider
 from dbk.providers.openai import OpenAIProvider
 from dbk.providers.anthropic import AnthropicProvider
+from dbk.providers.runtime import (
+    MetricsProvider,
+    StorageProvider,
+    AlertProvider,
+    MetricPoint,
+    MetricsResult,
+    QueryResult,
+    AlertRule,
+    AlertEvaluation,
+)
 
 
 def _toml_provider() -> str | None:
@@ -68,6 +87,7 @@ def get_provider() -> BaseProvider:
 
 
 __all__ = [
+    # LLM providers
     "BaseProvider",
     "CompletionMessage",
     "CompletionResponse",
@@ -75,6 +95,16 @@ __all__ = [
     "MockProvider",
     "OpenAIProvider",
     "AnthropicProvider",
+    # Runtime providers
+    "MetricsProvider",
+    "StorageProvider",
+    "AlertProvider",
+    "MetricPoint",
+    "MetricsResult",
+    "QueryResult",
+    "AlertRule",
+    "AlertEvaluation",
+    # Entry points
     "auto_select_provider",
     "get_provider",
 ]
