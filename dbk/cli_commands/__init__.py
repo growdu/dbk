@@ -30,6 +30,7 @@ import argparse
 from typing import Callable
 
 # Import each command module to register its class.
+from . import agent      # noqa: F401
 from . import init_      # noqa: F401
 from . import config     # noqa: F401
 from . import collect    # noqa: F401
@@ -45,6 +46,7 @@ def register_all(subparsers) -> None:
 
     Called once from cli.build_parser() to attach every command group.
     """
+    agent.AgentCommand().configure(subparsers)
     init_.InitCommand().configure(subparsers)
     config.ValidateCommand().configure(subparsers)
     config.ConfigCommand().configure(subparsers)

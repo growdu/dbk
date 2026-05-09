@@ -24,7 +24,7 @@ def _run(args: list[str]) -> tuple[int, str]:
 
 class TestAlertRulesList:
     def test_list_shows_builtin_rules(self) -> None:
-        code, out = _run(["alert", "rules", "list"])
+        code, out = _run(["alert", "rules", "list", "--format", "json"])
         assert code == 0, out
         data = json.loads(out)
         assert "rules" in data
@@ -36,7 +36,7 @@ class TestAlertRulesList:
         assert "replication_lag" in names
 
     def test_list_rules_are_valid_json(self) -> None:
-        code, out = _run(["alert", "rules", "list"])
+        code, out = _run(["alert", "rules", "list", "--format", "json"])
         assert code == 0
         # Should not raise
         data = json.loads(out)
@@ -102,7 +102,7 @@ class TestAlertRulesExport:
 
 class TestAlertRulesValidate:
     def test_validate_nonexistent_file_returns_error(self) -> None:
-        code, out = _run(["alert", "rules", "validate", "--rules-path", "/nonexistent/rules.json"])
+        code, out = _run(["alert", "rules", "validate", "/nonexistent/rules.json"])
         assert code == 2, out
         data = json.loads(out)
         assert data["valid"] is False
