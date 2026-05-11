@@ -102,8 +102,8 @@ Ensure all new code includes type annotations. The project targets Python 3.10+ 
 ### Adding a New Plugin Hook
 
 1. Add the hook method to `dbk/plugins.py` under `PluginABC`.
-2. Document the hook in `doc/PLUGIN_SYSTEM.md`.
-3. Update `CONTRIBUTING.md` if the hook has contributor-facing implications.
+2. Document the hook in `docs/PLUGIN_SYSTEM.md`.
+3. Update `docs/CONTRIBUTING.md` if the hook has contributor-facing implications.
 4. Add tests.
 
 ## Submitting Changes

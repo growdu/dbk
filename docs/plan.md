@@ -67,12 +67,12 @@
 * ~~Sub-agent 调度框架~~ **✅ 已完成**（SubAgent / MainAgent / SubAgentPool / SubAgentExecutor 完整实现，49 测试全部通过）
 * ~~AIOps 完整闭环~~ **✅ 已完成**（AgentResponder：AlertEvent → agent diagnostic session，dbk alert daemon start --enable-agent）
 * ~~CI 流程~~ **✅ 已完成**（pre-commit + GitHub Actions lint/type/test，2 个预先存在测试失败已修复）
-* ~~eBPF execute 提权代理~~ **🔧 已实现**（`_escalate()` 引擎：root → pkexec → sudo → none 四级路径，`EscalationResult`，审计链路 `trace_approval_audit` 表；polkit 策略文件见 `doc/PRIVILEGE_ESCALATION_DESIGN.md`）
+* ~~eBPF execute 提权代理~~ **🔧 已实现**（`_escalate()` 引擎：root → pkexec → sudo → none 四级路径，`EscalationResult`，审计链路 `trace_approval_audit` 表；polkit 策略文件见 `docs/PRIVILEGE_ESCALATION_DESIGN.md`）
 * ~~API/SDK 形式的复用层~~ **✅ 已完成**（`DBKClient` / `DBKAsyncClient` / `DBKRemoteClient` + 完整测试矩阵）
 
 ### 2.2 工程化缺口
 
-* ~~Packaging 与发布流程~~ **✅ 已完成**（CHANGELOG.md + pyproject.toml 完整元数据 + project.urls + keywords + classifiers）
+* ~~Packaging 与发布流程~~ **✅ 已完成**（docs/CHANGELOG.md + pyproject.toml 完整元数据 + project.urls + keywords + classifiers）
 * 缺统一配置体系（全局配置文件 + 环境覆盖 + 配置校验）— **已部分实现（环境变量覆盖 + dbk validate）**
 
 ### 2.3 风险与注意点

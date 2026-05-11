@@ -554,7 +554,7 @@ for name, st in statuses.items():
 
 ## Plugin Routes
 
-Plugins can register additional routes dynamically. See `doc/PLUGIN_SYSTEM.md`.
+Plugins can register additional routes dynamically. See `docs/PLUGIN_SYSTEM.md`.
 
 ### `GET /metrics`
 

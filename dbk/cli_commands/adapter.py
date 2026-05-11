@@ -2,7 +2,7 @@
 
 Provides a lightweight HTTP interface that executes CLI commands and
 returns CommandResult-serialised JSON.  This is the adapter layer
-for future TUI or TypeScript frontends (plan.md 5.2e / 5.3).
+for future TUI or TypeScript frontends (docs/plan.md 5.2e / 5.3).
 
 Usage (server mode)
 -------------------

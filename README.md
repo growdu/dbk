@@ -225,7 +225,7 @@ Run the complete demo covering all features:
 
 ## Contributing
 
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, testing, code style, and type checking guidelines.
+Contributions are welcome! Please see [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for development setup, testing, code style, and type checking guidelines.
 
 ## Testing
 
@@ -262,7 +262,7 @@ frontend/
   index.html      Web UI
   app.css         Web UI styles
   app.js          Web UI JavaScript
-doc/
+docs/
   PLUGIN_SYSTEM.md    Plugin system documentation
   WEB_UI.md           Web UI documentation
   API.md              REST API reference

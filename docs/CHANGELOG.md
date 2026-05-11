@@ -45,7 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   two-phase graceful shutdown
 - **CI/CD**: pre-commit hooks + GitHub Actions (lint, type-check, pytest on
   Python 3.10/3.11/3.12)
-- **Documentation**: `详细设计文档.md` (architecture), `plan.md` (progress)
+- **Documentation**: `docs/详细设计文档.md` (architecture), `docs/plan.md` (progress)
 
 ### Fixed
 

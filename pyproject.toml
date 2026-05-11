@@ -59,7 +59,7 @@ dbk = "dbk.cli:main"
 Homepage = "https://github.com/dbk-team/dbk"
 Documentation = "https://github.com/dbk-team/dbk#readme"
 Repository = "https://github.com/dbk-team/dbk"
-Changelog = "https://github.com/dbk-team/dbk/blob/main/CHANGELOG.md"
+Changelog = "https://github.com/dbk-team/dbk/blob/main/docs/CHANGELOG.md"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
