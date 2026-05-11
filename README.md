@@ -263,6 +263,8 @@ frontend/
   app.css         Web UI styles
   app.js          Web UI JavaScript
 docs/
+  ARCHITECTURE_DEVELOPMENT_PLAN.md  Architecture remediation development plan
+  ARCHITECTURE_REVIEW.md  Architecture review and remediation plan
   PLUGIN_SYSTEM.md    Plugin system documentation
   WEB_UI.md           Web UI documentation
   API.md              REST API reference
